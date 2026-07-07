@@ -456,6 +456,92 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 	return &result, nil
 }
 
+// Attributes detects face attributes (age, gender, emotion, glasses, mask,
+// head pose, landmarks) for all faces in an image. No face is enrolled.
+func (r *FacesResource) Attributes(ctx context.Context, collectionID string, image []byte, filename string) (*AttributesResult, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := writeImagePart(mw, "image", imageFilename(filename, "image.jpg"), image); err != nil {
+		return nil, err
+	}
+	mw.Close()
+
+	data, err := r.c.do(ctx, http.MethodPost,
+		"/collections/"+collectionID+"/attributes",
+		&buf, mw.FormDataContentType())
+	if err != nil {
+		return nil, err
+	}
+	var result AttributesResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("frapiaas: decode attributes response: %w", err)
+	}
+	return &result, nil
+}
+
+// BatchRegisterAsync submits up to 100 faces for asynchronous registration.
+// It returns the created job immediately; poll GetBatchJob until the job's
+// Status is "done" or "failed".
+func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID string, items []BatchItem) (*BatchJob, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	type entry struct {
+		ExternalID string                 `json:"external_id"`
+		Metadata   map[string]interface{} `json:"metadata"`
+	}
+	entries := make([]entry, 0, len(items))
+
+	for i, item := range items {
+		field := fmt.Sprintf("images[%d]", i)
+		fname := imageFilename(item.Filename, "image.jpg")
+		if err := writeImagePart(mw, field, fname, item.Image); err != nil {
+			return nil, fmt.Errorf("frapiaas: write image[%d]: %w", i, err)
+		}
+		meta := item.Metadata
+		if meta == nil {
+			meta = map[string]interface{}{}
+		}
+		entries = append(entries, entry{ExternalID: item.ExternalID, Metadata: meta})
+	}
+
+	entriesJSON, err := json.Marshal(entries)
+	if err != nil {
+		return nil, fmt.Errorf("frapiaas: marshal entries: %w", err)
+	}
+	if err := mw.WriteField("entries", string(entriesJSON)); err != nil {
+		return nil, err
+	}
+	mw.Close()
+
+	data, err := r.c.do(ctx, http.MethodPost,
+		"/collections/"+collectionID+"/faces/batch-async",
+		&buf, mw.FormDataContentType())
+	if err != nil {
+		return nil, err
+	}
+	var job BatchJob
+	if err := json.Unmarshal(data, &job); err != nil {
+		return nil, fmt.Errorf("frapiaas: decode batch job: %w", err)
+	}
+	return &job, nil
+}
+
+// GetBatchJob fetches the status (and, when available, per-image results) of
+// an async batch registration job.
+func (r *FacesResource) GetBatchJob(ctx context.Context, collectionID, jobID string) (*BatchJob, error) {
+	data, err := r.c.do(ctx, http.MethodGet,
+		"/collections/"+collectionID+"/batch/"+jobID, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	var job BatchJob
+	if err := json.Unmarshal(data, &job); err != nil {
+		return nil, fmt.Errorf("frapiaas: decode batch job: %w", err)
+	}
+	return &job, nil
+}
+
 // ─── CollectionsResource ──────────────────────────────────────────────────────
 
 // CollectionsResource provides operations for managing face collections.

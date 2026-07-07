@@ -140,3 +140,88 @@ type BatchItem struct {
 	Filename   string
 	Metadata   map[string]interface{}
 }
+
+// ─── Face Attributes ─────────────────────────────────────────────────────────
+
+// FaceBBox is a face bounding box in pixel coordinates.
+type FaceBBox struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// ImageSize is the analyzed image's dimensions.
+type ImageSize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// HeadPose holds estimated head orientation angles in degrees.
+type HeadPose struct {
+	Yaw          float64 `json:"yaw"`
+	Pitch        float64 `json:"pitch"`
+	Roll         float64 `json:"roll"`
+	FrontalScore float64 `json:"frontal_score"`
+}
+
+// EmotionResult holds emotion classification output.
+type EmotionResult struct {
+	Label      string             `json:"label"`
+	Confidence float64            `json:"confidence"`
+	Scores     map[string]float64 `json:"scores,omitempty"`
+}
+
+// DetectionResult holds a boolean detection (glasses, mask) with confidence.
+type DetectionResult struct {
+	Detected   bool    `json:"detected"`
+	Confidence float64 `json:"confidence"`
+}
+
+// FaceAttributes describes one detected face.
+type FaceAttributes struct {
+	Age          int              `json:"age"`
+	Gender       string           `json:"gender"`
+	DetScore     float64          `json:"det_score"`
+	BBox         FaceBBox         `json:"bbox"`
+	Landmarks5pt [][]float64      `json:"landmarks_5pt,omitempty"`
+	Landmarks106 [][]float64      `json:"landmarks_106,omitempty"`
+	HeadPose     *HeadPose        `json:"head_pose,omitempty"`
+	Emotion      *EmotionResult   `json:"emotion,omitempty"`
+	Glasses      *DetectionResult `json:"glasses,omitempty"`
+	Mask         *DetectionResult `json:"mask,omitempty"`
+}
+
+// AttributesResult is the response of the attributes endpoint.
+type AttributesResult struct {
+	FaceDetected bool             `json:"face_detected"`
+	FaceCount    int              `json:"face_count"`
+	Primary      *FaceAttributes  `json:"primary,omitempty"`
+	Faces        []FaceAttributes `json:"faces"`
+	ImageSize    *ImageSize       `json:"image_size,omitempty"`
+}
+
+// ─── Async Batch Jobs ────────────────────────────────────────────────────────
+
+// BatchJobResult is the outcome for one image in an async batch job.
+type BatchJobResult struct {
+	Index      int     `json:"index"`
+	ExternalID string  `json:"external_id"`
+	FaceID     *string `json:"face_id,omitempty"`
+	Error      *string `json:"error,omitempty"`
+}
+
+// BatchJob tracks an asynchronous batch registration job.
+// Status is one of: queued, processing, done, failed.
+type BatchJob struct {
+	ID           string           `json:"id"`
+	CollectionID string           `json:"collection_id"`
+	Status       string           `json:"status"`
+	Total        int              `json:"total"`
+	Processed    int              `json:"processed"`
+	Succeeded    int              `json:"succeeded"`
+	Failed       int              `json:"failed"`
+	Results      []BatchJobResult `json:"results,omitempty"`
+	CreatedAt    string           `json:"created_at"`
+	UpdatedAt    string           `json:"updated_at"`
+}
