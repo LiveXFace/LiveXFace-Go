@@ -1,5 +1,5 @@
-// Package serupa provides a Go client for the Serupa face recognition API.
-package serupa
+// Package idemity provides a Go client for the Idemity face recognition API.
+package idemity
 
 import (
 	"bytes"
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const defaultBaseURL = "https://api.serupa.ai/api/v1"
+const defaultBaseURL = "https://api.idemity.com/api/v1"
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ func (e *APIError) Error() string {
 
 // ─── Client ───────────────────────────────────────────────────────────────────
 
-// Client is the main entry point for the Serupa SDK.
+// Client is the main entry point for the Idemity SDK.
 type Client struct {
 	apiKey     string
 	baseURL    string
@@ -87,7 +87,7 @@ func New(apiKey string, opts ...Option) *Client {
 
 // ─── Internal HTTP helper ─────────────────────────────────────────────────────
 
-// apiEnvelope is the standard response wrapper used by Serupa.
+// apiEnvelope is the standard response wrapper used by Idemity.
 type apiEnvelope struct {
 	Success   bool            `json:"success"`
 	Data      json.RawMessage `json:"data"`
@@ -98,13 +98,13 @@ type apiEnvelope struct {
 	} `json:"error"`
 }
 
-// do executes an HTTP request and unwraps the Serupa response envelope.
+// do executes an HTTP request and unwraps the Idemity response envelope.
 // On a non-successful response it returns a *APIError.
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (json.RawMessage, error) {
 	url := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
-		return nil, fmt.Errorf("serupa: build request: %w", err)
+		return nil, fmt.Errorf("idemity: build request: %w", err)
 	}
 	req.Header.Set("X-API-Key", c.apiKey)
 	if contentType != "" {
@@ -113,13 +113,13 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("serupa: http: %w", err)
+		return nil, fmt.Errorf("idemity: http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("serupa: read body: %w", err)
+		return nil, fmt.Errorf("idemity: read body: %w", err)
 	}
 
 	var env apiEnvelope
@@ -156,7 +156,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload interf
 	if payload != nil {
 		b, err := json.Marshal(payload)
 		if err != nil {
-			return nil, fmt.Errorf("serupa: marshal body: %w", err)
+			return nil, fmt.Errorf("idemity: marshal body: %w", err)
 		}
 		bodyReader = bytes.NewReader(b)
 		contentType = "application/json"
@@ -212,7 +212,7 @@ func (r *FacesResource) Register(ctx context.Context, collectionID string, input
 
 	fname := imageFilename(input.Filename, "image.jpg")
 	if err := writeImagePart(mw, "image", fname, input.Image); err != nil {
-		return nil, fmt.Errorf("serupa: write image: %w", err)
+		return nil, fmt.Errorf("idemity: write image: %w", err)
 	}
 	if err := mw.WriteField("external_id", input.ExternalID); err != nil {
 		return nil, err
@@ -220,7 +220,7 @@ func (r *FacesResource) Register(ctx context.Context, collectionID string, input
 	if len(input.Metadata) > 0 {
 		metaBytes, err := json.Marshal(input.Metadata)
 		if err != nil {
-			return nil, fmt.Errorf("serupa: marshal metadata: %w", err)
+			return nil, fmt.Errorf("idemity: marshal metadata: %w", err)
 		}
 		if err := mw.WriteField("metadata", string(metaBytes)); err != nil {
 			return nil, err
@@ -236,7 +236,7 @@ func (r *FacesResource) Register(ctx context.Context, collectionID string, input
 	}
 	var face Face
 	if err := json.Unmarshal(data, &face); err != nil {
-		return nil, fmt.Errorf("serupa: decode face: %w", err)
+		return nil, fmt.Errorf("idemity: decode face: %w", err)
 	}
 	return &face, nil
 }
@@ -258,7 +258,7 @@ func (r *FacesResource) List(ctx context.Context, collectionID string, opts List
 		Total int     `json:"total"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, 0, fmt.Errorf("serupa: decode faces list: %w", err)
+		return nil, 0, fmt.Errorf("idemity: decode faces list: %w", err)
 	}
 	return result.Faces, result.Total, nil
 }
@@ -272,7 +272,7 @@ func (r *FacesResource) Get(ctx context.Context, collectionID, faceID string) (*
 	}
 	var face Face
 	if err := json.Unmarshal(data, &face); err != nil {
-		return nil, fmt.Errorf("serupa: decode face: %w", err)
+		return nil, fmt.Errorf("idemity: decode face: %w", err)
 	}
 	return &face, nil
 }
@@ -291,7 +291,7 @@ func (r *FacesResource) Verify(ctx context.Context, collectionID string, input V
 
 	fname := imageFilename(input.Filename, "image.jpg")
 	if err := writeImagePart(mw, "image", fname, input.Image); err != nil {
-		return nil, fmt.Errorf("serupa: write image: %w", err)
+		return nil, fmt.Errorf("idemity: write image: %w", err)
 	}
 	if input.FaceID != "" {
 		if err := mw.WriteField("face_id", input.FaceID); err != nil {
@@ -313,7 +313,7 @@ func (r *FacesResource) Verify(ctx context.Context, collectionID string, input V
 	}
 	var result VerifyResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("serupa: decode verify result: %w", err)
+		return nil, fmt.Errorf("idemity: decode verify result: %w", err)
 	}
 	return &result, nil
 }
@@ -325,7 +325,7 @@ func (r *FacesResource) Identify(ctx context.Context, collectionID string, input
 
 	fname := imageFilename(input.Filename, "image.jpg")
 	if err := writeImagePart(mw, "image", fname, input.Image); err != nil {
-		return nil, fmt.Errorf("serupa: write image: %w", err)
+		return nil, fmt.Errorf("idemity: write image: %w", err)
 	}
 	topK := input.TopK
 	if topK == 0 {
@@ -349,7 +349,7 @@ func (r *FacesResource) Identify(ctx context.Context, collectionID string, input
 	}
 	var result IdentifyResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("serupa: decode identify result: %w", err)
+		return nil, fmt.Errorf("idemity: decode identify result: %w", err)
 	}
 	return &result, nil
 }
@@ -361,7 +361,7 @@ func (r *FacesResource) Liveness(ctx context.Context, collectionID string, image
 
 	fname := imageFilename(filename, "image.jpg")
 	if err := writeImagePart(mw, "image", fname, image); err != nil {
-		return nil, fmt.Errorf("serupa: write image: %w", err)
+		return nil, fmt.Errorf("idemity: write image: %w", err)
 	}
 	mw.Close()
 
@@ -373,7 +373,7 @@ func (r *FacesResource) Liveness(ctx context.Context, collectionID string, image
 	}
 	var result LivenessResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("serupa: decode liveness result: %w", err)
+		return nil, fmt.Errorf("idemity: decode liveness result: %w", err)
 	}
 	return &result, nil
 }
@@ -386,11 +386,11 @@ func (r *FacesResource) Compare(ctx context.Context, input CompareInput) (*Compa
 
 	f1 := imageFilename(input.Filename1, "image1.jpg")
 	if err := writeImagePart(mw, "image1", f1, input.Image1); err != nil {
-		return nil, fmt.Errorf("serupa: write image1: %w", err)
+		return nil, fmt.Errorf("idemity: write image1: %w", err)
 	}
 	f2 := imageFilename(input.Filename2, "image2.jpg")
 	if err := writeImagePart(mw, "image2", f2, input.Image2); err != nil {
-		return nil, fmt.Errorf("serupa: write image2: %w", err)
+		return nil, fmt.Errorf("idemity: write image2: %w", err)
 	}
 	if input.Threshold > 0 {
 		if err := mw.WriteField("threshold", strconv.FormatFloat(input.Threshold, 'f', -1, 64)); err != nil {
@@ -405,7 +405,7 @@ func (r *FacesResource) Compare(ctx context.Context, input CompareInput) (*Compa
 	}
 	var result CompareResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("serupa: decode compare result: %w", err)
+		return nil, fmt.Errorf("idemity: decode compare result: %w", err)
 	}
 	return &result, nil
 }
@@ -425,7 +425,7 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 		field := fmt.Sprintf("images[%d]", i)
 		fname := imageFilename(item.Filename, "image.jpg")
 		if err := writeImagePart(mw, field, fname, item.Image); err != nil {
-			return nil, fmt.Errorf("serupa: write image[%d]: %w", i, err)
+			return nil, fmt.Errorf("idemity: write image[%d]: %w", i, err)
 		}
 		meta := item.Metadata
 		if meta == nil {
@@ -436,7 +436,7 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 
 	entriesJSON, err := json.Marshal(entries)
 	if err != nil {
-		return nil, fmt.Errorf("serupa: marshal entries: %w", err)
+		return nil, fmt.Errorf("idemity: marshal entries: %w", err)
 	}
 	if err := mw.WriteField("entries", string(entriesJSON)); err != nil {
 		return nil, err
@@ -451,7 +451,7 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 	}
 	var result BatchResponse
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("serupa: decode batch response: %w", err)
+		return nil, fmt.Errorf("idemity: decode batch response: %w", err)
 	}
 	return &result, nil
 }
@@ -474,7 +474,7 @@ func (r *FacesResource) Attributes(ctx context.Context, collectionID string, ima
 	}
 	var result AttributesResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("serupa: decode attributes response: %w", err)
+		return nil, fmt.Errorf("idemity: decode attributes response: %w", err)
 	}
 	return &result, nil
 }
@@ -496,7 +496,7 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 		field := fmt.Sprintf("images[%d]", i)
 		fname := imageFilename(item.Filename, "image.jpg")
 		if err := writeImagePart(mw, field, fname, item.Image); err != nil {
-			return nil, fmt.Errorf("serupa: write image[%d]: %w", i, err)
+			return nil, fmt.Errorf("idemity: write image[%d]: %w", i, err)
 		}
 		meta := item.Metadata
 		if meta == nil {
@@ -507,7 +507,7 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 
 	entriesJSON, err := json.Marshal(entries)
 	if err != nil {
-		return nil, fmt.Errorf("serupa: marshal entries: %w", err)
+		return nil, fmt.Errorf("idemity: marshal entries: %w", err)
 	}
 	if err := mw.WriteField("entries", string(entriesJSON)); err != nil {
 		return nil, err
@@ -522,7 +522,7 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 	}
 	var job BatchJob
 	if err := json.Unmarshal(data, &job); err != nil {
-		return nil, fmt.Errorf("serupa: decode batch job: %w", err)
+		return nil, fmt.Errorf("idemity: decode batch job: %w", err)
 	}
 	return &job, nil
 }
@@ -537,7 +537,7 @@ func (r *FacesResource) GetBatchJob(ctx context.Context, collectionID, jobID str
 	}
 	var job BatchJob
 	if err := json.Unmarshal(data, &job); err != nil {
-		return nil, fmt.Errorf("serupa: decode batch job: %w", err)
+		return nil, fmt.Errorf("idemity: decode batch job: %w", err)
 	}
 	return &job, nil
 }
@@ -557,7 +557,7 @@ func (r *CollectionsResource) List(ctx context.Context) ([]*FaceCollection, erro
 	}
 	var cols []*FaceCollection
 	if err := json.Unmarshal(data, &cols); err != nil {
-		return nil, fmt.Errorf("serupa: decode collections: %w", err)
+		return nil, fmt.Errorf("idemity: decode collections: %w", err)
 	}
 	return cols, nil
 }
@@ -570,7 +570,7 @@ func (r *CollectionsResource) Get(ctx context.Context, collectionID string) (*Fa
 	}
 	var col FaceCollection
 	if err := json.Unmarshal(data, &col); err != nil {
-		return nil, fmt.Errorf("serupa: decode collection: %w", err)
+		return nil, fmt.Errorf("idemity: decode collection: %w", err)
 	}
 	return &col, nil
 }
@@ -590,7 +590,7 @@ func (r *CollectionsResource) Create(ctx context.Context, input CreateCollection
 	}
 	var col FaceCollection
 	if err := json.Unmarshal(data, &col); err != nil {
-		return nil, fmt.Errorf("serupa: decode collection: %w", err)
+		return nil, fmt.Errorf("idemity: decode collection: %w", err)
 	}
 	return &col, nil
 }
@@ -613,7 +613,7 @@ func (r *CollectionsResource) Update(ctx context.Context, collectionID string, i
 	}
 	var col FaceCollection
 	if err := json.Unmarshal(data, &col); err != nil {
-		return nil, fmt.Errorf("serupa: decode collection: %w", err)
+		return nil, fmt.Errorf("idemity: decode collection: %w", err)
 	}
 	return &col, nil
 }

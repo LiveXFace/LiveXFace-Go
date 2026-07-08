@@ -1,4 +1,4 @@
-package serupa
+package idemity
 
 import "time"
 
