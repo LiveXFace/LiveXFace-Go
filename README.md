@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-white.svg">
+    <img src="docs/brand/logo.svg" alt="Idemity" width="220">
+  </picture>
+</p>
+
 # Idemity Go SDK
 
 Official Go client for the [Idemity](https://idemity.com) face recognition API.
