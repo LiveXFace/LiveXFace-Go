@@ -1,3 +1,3 @@
-module github.com/fr-apiaas/fr-apiaas-go
+module github.com/serupa/serupa-go
 
 go 1.22

@@ -1,11 +1,11 @@
-# FR-APIaaS Go SDK
+# Serupa Go SDK
 
-Official Go client for the [FR-APIaaS](https://fr-apiaas.io) face recognition API.
+Official Go client for the [Serupa](https://serupa.ai) face recognition API.
 
 ## Installation
 
 ```bash
-go get github.com/fr-apiaas/fr-apiaas-go
+go get github.com/serupa/serupa-go
 ```
 
 Requires Go 1.22 or later.
@@ -21,16 +21,16 @@ import (
     "log"
     "os"
 
-    frapiaas "github.com/fr-apiaas/fr-apiaas-go"
+    serupa "github.com/serupa/serupa-go"
 )
 
 func main() {
-    client := frapiaas.New(os.Getenv("FR_API_KEY"))
+    client := serupa.New(os.Getenv("SERUPA_API_KEY"))
     ctx := context.Background()
 
     // Register a face
     imageBytes, _ := os.ReadFile("alice.jpg")
-    face, err := client.Faces.Register(ctx, "col_01abc...", frapiaas.RegisterInput{
+    face, err := client.Faces.Register(ctx, "col_01abc...", serupa.RegisterInput{
         ExternalID: "user_alice",
         Image:      imageBytes,
         Metadata:   map[string]interface{}{"name": "Alice Smith"},
@@ -42,13 +42,13 @@ func main() {
 
     // Identify a face
     probeBytes, _ := os.ReadFile("probe.jpg")
-    result, err := client.Faces.Identify(ctx, "col_01abc...", frapiaas.IdentifyInput{
+    result, err := client.Faces.Identify(ctx, "col_01abc...", serupa.IdentifyInput{
         Image: probeBytes,
         TopK:  3,
     })
     if err != nil {
         // Check if it is an API error
-        if apiErr, ok := err.(*frapiaas.APIError); ok {
+        if apiErr, ok := err.(*serupa.APIError); ok {
             fmt.Printf("API error %s (HTTP %d): %s\n", apiErr.Code, apiErr.StatusCode, apiErr.Message)
         }
         log.Fatal(err)
@@ -62,10 +62,10 @@ func main() {
 ## Configuration
 
 ```go
-client := frapiaas.New(
-    "fr_live_xxxx",
-    frapiaas.WithBaseURL("https://your-instance.example.com/api/v1"),
-    frapiaas.WithTimeout(15 * time.Second),
+client := serupa.New(
+    "srp_live_xxxx",
+    serupa.WithBaseURL("https://your-instance.example.com/api/v1"),
+    serupa.WithTimeout(15 * time.Second),
 )
 ```
 
@@ -98,12 +98,12 @@ client := frapiaas.New(
 ## Error Handling
 
 All methods return a standard `error`. When the server returns an API-level error,
-the value is `*frapiaas.APIError`:
+the value is `*serupa.APIError`:
 
 ```go
 result, err := client.Faces.Identify(ctx, collID, input)
 if err != nil {
-    var apiErr *frapiaas.APIError
+    var apiErr *serupa.APIError
     if errors.As(err, &apiErr) {
         fmt.Println("code:", apiErr.Code)
         fmt.Println("status:", apiErr.StatusCode)

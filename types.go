@@ -1,4 +1,4 @@
-package frapiaas
+package serupa
 
 import "time"
 
