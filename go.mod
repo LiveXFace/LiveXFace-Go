@@ -1,3 +1,3 @@
-module github.com/idemity/idemity-go
+module github.com/livexface/livexface-go
 
 go 1.22

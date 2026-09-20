@@ -1,40 +1,40 @@
-package idemity
+package livexface
 
 import "time"
 
 // Face represents a registered face in a collection.
 type Face struct {
 	ID           string                 `json:"id"`
-	CollectionID string                 `json:"collection_id"`
-	ExternalID   string                 `json:"external_id"`
+	CollectionID string                 `json:"collectionId"`
+	ExternalID   string                 `json:"externalId"`
 	Metadata     map[string]interface{} `json:"metadata"`
-	ImageURL     string                 `json:"image_url"`
-	CreatedAt    time.Time              `json:"created_at"`
+	ImageURL     string                 `json:"imageUrl"`
+	CreatedAt    time.Time              `json:"createdAt"`
 }
 
 // FaceCollection represents a named bucket of enrolled faces.
 type FaceCollection struct {
 	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
+	OrganizationID string    `json:"organizationId"`
 	Name           string    `json:"name"`
 	Description    string    `json:"description"`
-	FaceCount      int       `json:"face_count"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	FaceCount      int       `json:"faceCount"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // VerifyResult is returned by a 1:1 face verification request.
 type VerifyResult struct {
 	Match         bool    `json:"match"`
 	Confidence    float64 `json:"confidence"`
-	ThresholdUsed float64 `json:"threshold_used"`
-	FaceID        string  `json:"face_id"`
+	ThresholdUsed float64 `json:"thresholdUsed"`
+	FaceID        string  `json:"faceId"`
 }
 
 // IdentifyMatch is a single match returned by a 1:N identification request.
 type IdentifyMatch struct {
-	FaceID     string                 `json:"face_id"`
-	ExternalID string                 `json:"external_id"`
+	FaceID     string                 `json:"faceId"`
+	ExternalID string                 `json:"externalId"`
 	Confidence float64                `json:"confidence"`
 	Metadata   map[string]interface{} `json:"metadata"`
 }
@@ -42,27 +42,20 @@ type IdentifyMatch struct {
 // IdentifyResult is returned by a 1:N identification request.
 type IdentifyResult struct {
 	Matches     []IdentifyMatch `json:"matches"`
-	QueryTimeMs int             `json:"query_time_ms"`
+	QueryTimeMs int             `json:"queryTimeMs"`
 }
 
 // LivenessResult is returned by a passive liveness detection request.
 type LivenessResult struct {
-	IsLive        bool    `json:"is_live"`
-	LivenessScore float64 `json:"liveness_score"`
-	FaceDetected  bool    `json:"face_detected"`
-	FaceCount     int     `json:"face_count"`
-}
-
-// CompareResult is returned by a face comparison request.
-type CompareResult struct {
-	Match      bool    `json:"match"`
-	Confidence float64 `json:"confidence"`
-	Threshold  float64 `json:"threshold"`
+	IsLive        bool    `json:"isLive"`
+	LivenessScore float64 `json:"livenessScore"`
+	FaceDetected  bool    `json:"faceDetected"`
+	FaceCount     int     `json:"faceCount"`
 }
 
 // BatchFaceResult holds the outcome of a single face in a batch register request.
 type BatchFaceResult struct {
-	ExternalID string `json:"external_id"`
+	ExternalID string `json:"externalId"`
 	Face       *Face  `json:"face,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
@@ -162,7 +155,7 @@ type HeadPose struct {
 	Yaw          float64 `json:"yaw"`
 	Pitch        float64 `json:"pitch"`
 	Roll         float64 `json:"roll"`
-	FrontalScore float64 `json:"frontal_score"`
+	FrontalScore float64 `json:"frontalScore"`
 }
 
 // EmotionResult holds emotion classification output.
@@ -182,11 +175,11 @@ type DetectionResult struct {
 type FaceAttributes struct {
 	Age          int              `json:"age"`
 	Gender       string           `json:"gender"`
-	DetScore     float64          `json:"det_score"`
+	DetScore     float64          `json:"detScore"`
 	BBox         FaceBBox         `json:"bbox"`
-	Landmarks5pt [][]float64      `json:"landmarks_5pt,omitempty"`
-	Landmarks106 [][]float64      `json:"landmarks_106,omitempty"`
-	HeadPose     *HeadPose        `json:"head_pose,omitempty"`
+	Landmarks5pt [][]float64      `json:"landmarks5pt,omitempty"`
+	Landmarks106 [][]float64      `json:"landmarks106,omitempty"`
+	HeadPose     *HeadPose        `json:"headPose,omitempty"`
 	Emotion      *EmotionResult   `json:"emotion,omitempty"`
 	Glasses      *DetectionResult `json:"glasses,omitempty"`
 	Mask         *DetectionResult `json:"mask,omitempty"`
@@ -194,11 +187,11 @@ type FaceAttributes struct {
 
 // AttributesResult is the response of the attributes endpoint.
 type AttributesResult struct {
-	FaceDetected bool             `json:"face_detected"`
-	FaceCount    int              `json:"face_count"`
+	FaceDetected bool             `json:"faceDetected"`
+	FaceCount    int              `json:"faceCount"`
 	Primary      *FaceAttributes  `json:"primary,omitempty"`
 	Faces        []FaceAttributes `json:"faces"`
-	ImageSize    *ImageSize       `json:"image_size,omitempty"`
+	ImageSize    *ImageSize       `json:"imageSize,omitempty"`
 }
 
 // ─── Async Batch Jobs ────────────────────────────────────────────────────────
@@ -206,8 +199,8 @@ type AttributesResult struct {
 // BatchJobResult is the outcome for one image in an async batch job.
 type BatchJobResult struct {
 	Index      int     `json:"index"`
-	ExternalID string  `json:"external_id"`
-	FaceID     *string `json:"face_id,omitempty"`
+	ExternalID string  `json:"externalId"`
+	FaceID     *string `json:"faceId,omitempty"`
 	Error      *string `json:"error,omitempty"`
 }
 
@@ -215,13 +208,13 @@ type BatchJobResult struct {
 // Status is one of: queued, processing, done, failed.
 type BatchJob struct {
 	ID           string           `json:"id"`
-	CollectionID string           `json:"collection_id"`
+	CollectionID string           `json:"collectionId"`
 	Status       string           `json:"status"`
 	Total        int              `json:"total"`
 	Processed    int              `json:"processed"`
 	Succeeded    int              `json:"succeeded"`
 	Failed       int              `json:"failed"`
 	Results      []BatchJobResult `json:"results,omitempty"`
-	CreatedAt    string           `json:"created_at"`
-	UpdatedAt    string           `json:"updated_at"`
+	CreatedAt    string           `json:"createdAt"`
+	UpdatedAt    string           `json:"updatedAt"`
 }

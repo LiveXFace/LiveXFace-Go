@@ -1,18 +1,18 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-white.svg">
-    <img src="docs/brand/logo.svg" alt="Idemity" width="220">
+    <img src="docs/brand/logo.svg" alt="LiveXFace" width="220">
   </picture>
 </p>
 
-# Idemity Go SDK
+# LiveXFace Go SDK
 
-Official Go client for the [Idemity](https://idemity.com) face recognition API.
+Official Go client for the [LiveXFace](https://livexface.com) face recognition API.
 
 ## Installation
 
 ```bash
-go get github.com/idemity/idemity-go
+go get github.com/livexface/livexface-go
 ```
 
 Requires Go 1.22 or later.
@@ -28,16 +28,16 @@ import (
     "log"
     "os"
 
-    idemity "github.com/idemity/idemity-go"
+    livexface "github.com/livexface/livexface-go"
 )
 
 func main() {
-    client := idemity.New(os.Getenv("IDEMITY_API_KEY"))
+    client := livexface.New(os.Getenv("LIVEXFACE_API_KEY"))
     ctx := context.Background()
 
     // Register a face
     imageBytes, _ := os.ReadFile("alice.jpg")
-    face, err := client.Faces.Register(ctx, "col_01abc...", idemity.RegisterInput{
+    face, err := client.Faces.Register(ctx, "col_01abc...", livexface.RegisterInput{
         ExternalID: "user_alice",
         Image:      imageBytes,
         Metadata:   map[string]interface{}{"name": "Alice Smith"},
@@ -49,13 +49,13 @@ func main() {
 
     // Identify a face
     probeBytes, _ := os.ReadFile("probe.jpg")
-    result, err := client.Faces.Identify(ctx, "col_01abc...", idemity.IdentifyInput{
+    result, err := client.Faces.Identify(ctx, "col_01abc...", livexface.IdentifyInput{
         Image: probeBytes,
         TopK:  3,
     })
     if err != nil {
         // Check if it is an API error
-        if apiErr, ok := err.(*idemity.APIError); ok {
+        if apiErr, ok := err.(*livexface.APIError); ok {
             fmt.Printf("API error %s (HTTP %d): %s\n", apiErr.Code, apiErr.StatusCode, apiErr.Message)
         }
         log.Fatal(err)
@@ -69,10 +69,10 @@ func main() {
 ## Configuration
 
 ```go
-client := idemity.New(
-    "idm_live_xxxx",
-    idemity.WithBaseURL("https://your-instance.example.com/api/v1"),
-    idemity.WithTimeout(15 * time.Second),
+client := livexface.New(
+    "lxf_live_xxxx",
+    livexface.WithBaseURL("https://your-instance.example.com/api/v1"),
+    livexface.WithTimeout(15 * time.Second),
 )
 ```
 
@@ -105,12 +105,12 @@ client := idemity.New(
 ## Error Handling
 
 All methods return a standard `error`. When the server returns an API-level error,
-the value is `*idemity.APIError`:
+the value is `*livexface.APIError`:
 
 ```go
 result, err := client.Faces.Identify(ctx, collID, input)
 if err != nil {
-    var apiErr *idemity.APIError
+    var apiErr *livexface.APIError
     if errors.As(err, &apiErr) {
         fmt.Println("code:", apiErr.Code)
         fmt.Println("status:", apiErr.StatusCode)
