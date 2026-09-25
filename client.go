@@ -39,9 +39,9 @@ type Client struct {
 	httpClient *http.Client
 
 	// Faces provides operations for face enrollment and recognition.
+	// Collections are created and managed in the dashboard; the API has no
+	// endpoints for that, so the client has no collection operations.
 	Faces *FacesResource
-	// Collections provides operations for managing face collections.
-	Collections *CollectionsResource
 }
 
 // Option is a functional option for configuring a Client.
@@ -81,7 +81,6 @@ func New(apiKey string, opts ...Option) *Client {
 		o(c)
 	}
 	c.Faces = &FacesResource{c: c}
-	c.Collections = &CollectionsResource{c: c}
 	return c
 }
 
@@ -122,8 +121,23 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 		return nil, fmt.Errorf("livexface: read body: %w", err)
 	}
 
+	// A delete answers 204 with no body. Decoding it used to fail with
+	// PARSE_ERROR, so every successful Delete returned an error.
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		// An unknown route answers with a plain-text 404, not the JSON
+		// envelope; report the HTTP status rather than a parse failure.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, &APIError{
+				Code:       fmt.Sprintf("HTTP_%d", resp.StatusCode),
+				Message:    fmt.Sprintf("request failed with HTTP %d", resp.StatusCode),
+				StatusCode: resp.StatusCode,
+			}
+		}
 		return nil, &APIError{
 			Code:       "PARSE_ERROR",
 			Message:    "failed to parse response body",
@@ -540,86 +554,4 @@ func (r *FacesResource) GetBatchJob(ctx context.Context, collectionID, jobID str
 		return nil, fmt.Errorf("livexface: decode batch job: %w", err)
 	}
 	return &job, nil
-}
-
-// ─── CollectionsResource ──────────────────────────────────────────────────────
-
-// CollectionsResource provides operations for managing face collections.
-type CollectionsResource struct {
-	c *Client
-}
-
-// List returns all collections accessible by the configured API key.
-func (r *CollectionsResource) List(ctx context.Context) ([]*FaceCollection, error) {
-	data, err := r.c.do(ctx, http.MethodGet, "/collections", nil, "")
-	if err != nil {
-		return nil, err
-	}
-	var cols []*FaceCollection
-	if err := json.Unmarshal(data, &cols); err != nil {
-		return nil, fmt.Errorf("livexface: decode collections: %w", err)
-	}
-	return cols, nil
-}
-
-// Get retrieves a single collection by ID.
-func (r *CollectionsResource) Get(ctx context.Context, collectionID string) (*FaceCollection, error) {
-	data, err := r.c.do(ctx, http.MethodGet, "/collections/"+collectionID, nil, "")
-	if err != nil {
-		return nil, err
-	}
-	var col FaceCollection
-	if err := json.Unmarshal(data, &col); err != nil {
-		return nil, fmt.Errorf("livexface: decode collection: %w", err)
-	}
-	return &col, nil
-}
-
-// Create creates a new face collection.
-func (r *CollectionsResource) Create(ctx context.Context, input CreateCollectionInput) (*FaceCollection, error) {
-	body := map[string]interface{}{
-		"name":        input.Name,
-		"description": input.Description,
-	}
-	if input.RetentionDays > 0 {
-		body["retention_days"] = input.RetentionDays
-	}
-	data, err := r.c.doJSON(ctx, http.MethodPost, "/collections", body)
-	if err != nil {
-		return nil, err
-	}
-	var col FaceCollection
-	if err := json.Unmarshal(data, &col); err != nil {
-		return nil, fmt.Errorf("livexface: decode collection: %w", err)
-	}
-	return &col, nil
-}
-
-// Update modifies a collection's name, description, or retention policy.
-func (r *CollectionsResource) Update(ctx context.Context, collectionID string, input UpdateCollectionInput) (*FaceCollection, error) {
-	body := map[string]interface{}{}
-	if input.Name != "" {
-		body["name"] = input.Name
-	}
-	if input.Description != "" {
-		body["description"] = input.Description
-	}
-	if input.RetentionDays != nil {
-		body["retention_days"] = *input.RetentionDays
-	}
-	data, err := r.c.doJSON(ctx, http.MethodPut, "/collections/"+collectionID, body)
-	if err != nil {
-		return nil, err
-	}
-	var col FaceCollection
-	if err := json.Unmarshal(data, &col); err != nil {
-		return nil, fmt.Errorf("livexface: decode collection: %w", err)
-	}
-	return &col, nil
-}
-
-// Delete removes a collection and all its enrolled faces.
-func (r *CollectionsResource) Delete(ctx context.Context, collectionID string) error {
-	_, err := r.c.do(ctx, http.MethodDelete, "/collections/"+collectionID, nil, "")
-	return err
 }
