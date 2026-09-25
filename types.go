@@ -12,17 +12,6 @@ type Face struct {
 	CreatedAt    time.Time              `json:"createdAt"`
 }
 
-// FaceCollection represents a named bucket of enrolled faces.
-type FaceCollection struct {
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organizationId"`
-	Name           string    `json:"name"`
-	Description    string    `json:"description"`
-	FaceCount      int       `json:"faceCount"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-}
-
 // VerifyResult is returned by a 1:1 face verification request.
 type VerifyResult struct {
 	Match         bool    `json:"match"`
@@ -109,21 +98,6 @@ type CompareInput struct {
 type ListOptions struct {
 	Limit  int
 	Offset int
-}
-
-// CreateCollectionInput holds the parameters for creating a new collection.
-type CreateCollectionInput struct {
-	Name          string
-	Description   string
-	RetentionDays int // 0 means no retention policy
-}
-
-// UpdateCollectionInput holds the parameters for updating a collection.
-// A nil RetentionDays pointer means "do not change".
-type UpdateCollectionInput struct {
-	Name          string
-	Description   string
-	RetentionDays *int
 }
 
 // BatchItem is a single entry in a batch register request.

@@ -94,13 +94,9 @@ client := livexface.New(
 
 ### Collections
 
-| Method | Description |
-|--------|-------------|
-| `Collections.List(ctx)` | List all accessible collections |
-| `Collections.Get(ctx, collectionID)` | Retrieve a collection by ID |
-| `Collections.Create(ctx, CreateCollectionInput)` | Create a new collection |
-| `Collections.Update(ctx, collectionID, UpdateCollectionInput)` | Update name, description, or retention |
-| `Collections.Delete(ctx, collectionID)` | Delete a collection and all its faces |
+Collections are created and managed in the LiveXFace dashboard, not through
+the API, so the client has no collection operations. Create one there and pass
+its ID to the calls above.
 
 ## Error Handling
 
@@ -114,7 +110,7 @@ if err != nil {
     if errors.As(err, &apiErr) {
         fmt.Println("code:", apiErr.Code)
         fmt.Println("status:", apiErr.StatusCode)
-        fmt.Println("request_id:", apiErr.RequestID)
+        fmt.Println("requestId:", apiErr.RequestID)
     }
 }
 ```
