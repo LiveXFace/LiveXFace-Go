@@ -1,6 +1,9 @@
 package livexface
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Face represents a registered face in a collection.
 type Face struct {
@@ -42,6 +45,73 @@ type LivenessResult struct {
 	FaceCount     int     `json:"faceCount"`
 }
 
+// LivenessFrame is a single frame (JPEG or PNG) submitted to ActiveLiveness.
+type LivenessFrame struct {
+	Image []byte
+	// Filename is optional; defaults to "frame_<n>.jpg".
+	Filename string
+}
+
+// LivenessChallenge is the outcome of one active liveness challenge.
+// Passed is nil when the challenge could not be evaluated. Any additional
+// metric keys returned by the server are kept in Metrics.
+type LivenessChallenge struct {
+	Passed    *bool                  `json:"passed"`
+	Available bool                   `json:"available"`
+	Metrics   map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes passed/available and keeps every other key in Metrics.
+func (c *LivenessChallenge) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*c = LivenessChallenge{}
+	if v, ok := raw["passed"]; ok {
+		if err := json.Unmarshal(v, &c.Passed); err != nil {
+			return err
+		}
+		delete(raw, "passed")
+	}
+	if v, ok := raw["available"]; ok {
+		if err := json.Unmarshal(v, &c.Available); err != nil {
+			return err
+		}
+		delete(raw, "available")
+	}
+	if len(raw) > 0 {
+		c.Metrics = make(map[string]interface{}, len(raw))
+		for k, v := range raw {
+			var val interface{}
+			if err := json.Unmarshal(v, &val); err != nil {
+				return err
+			}
+			c.Metrics[k] = val
+		}
+	}
+	return nil
+}
+
+// LivenessChallenges groups the per-challenge results of an active liveness check.
+type LivenessChallenges struct {
+	Blink            LivenessChallenge `json:"blink"`
+	HeadTurn         LivenessChallenge `json:"headTurn"`
+	PassiveAntispoof LivenessChallenge `json:"passiveAntispoof"`
+}
+
+// ActiveLivenessResult is returned by an active (multi-frame) liveness check.
+// LivenessToken and LivenessTokenExpiresAt are set only when IsLive is true.
+type ActiveLivenessResult struct {
+	IsLive                 bool               `json:"isLive"`
+	OverallScore           float64            `json:"overallScore"`
+	FramesAnalyzed         int                `json:"framesAnalyzed"`
+	FramesWithFace         int                `json:"framesWithFace"`
+	Challenges             LivenessChallenges `json:"challenges"`
+	LivenessToken          string             `json:"livenessToken,omitempty"`
+	LivenessTokenExpiresAt *time.Time         `json:"livenessTokenExpiresAt,omitempty"`
+}
+
 // BatchFaceResult holds the outcome of a single face in a batch register request.
 type BatchFaceResult struct {
 	ExternalID string `json:"externalId"`
@@ -65,6 +135,9 @@ type RegisterInput struct {
 	// Filename is optional; defaults to "image.jpg".
 	Filename string
 	Metadata map[string]interface{}
+	// LivenessToken is optional; a token from a passed ActiveLiveness check.
+	// Required when the collection requires liveness.
+	LivenessToken string
 }
 
 // VerifyInput holds the parameters for a 1:1 verification request.
@@ -106,6 +179,9 @@ type BatchItem struct {
 	Image      []byte
 	Filename   string
 	Metadata   map[string]interface{}
+	// LivenessToken is optional; a token from a passed ActiveLiveness check.
+	// Required when the collection requires liveness.
+	LivenessToken string
 }
 
 // ─── Face Attributes ─────────────────────────────────────────────────────────

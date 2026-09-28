@@ -240,6 +240,11 @@ func (r *FacesResource) Register(ctx context.Context, collectionID string, input
 			return nil, err
 		}
 	}
+	if input.LivenessToken != "" {
+		if err := mw.WriteField("liveness_token", input.LivenessToken); err != nil {
+			return nil, err
+		}
+	}
 	mw.Close()
 
 	data, err := r.c.do(ctx, http.MethodPost,
@@ -392,6 +397,37 @@ func (r *FacesResource) Liveness(ctx context.Context, collectionID string, image
 	return &result, nil
 }
 
+// ActiveLiveness runs an active liveness check (blink, head turn and passive
+// anti-spoofing) over a sequence of 5 to 50 frames. When the check passes, the
+// result carries a single-use LivenessToken (valid for 5 minutes, bound to the
+// organization and collection) that can be passed to Register or BatchItem to
+// enrol into a collection that requires liveness.
+func (r *FacesResource) ActiveLiveness(ctx context.Context, collectionID string, frames []LivenessFrame) (*ActiveLivenessResult, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	for i, frame := range frames {
+		field := fmt.Sprintf("frame_%d", i)
+		fname := imageFilename(frame.Filename, field+".jpg")
+		if err := writeImagePart(mw, field, fname, frame.Image); err != nil {
+			return nil, fmt.Errorf("livexface: write %s: %w", field, err)
+		}
+	}
+	mw.Close()
+
+	data, err := r.c.do(ctx, http.MethodPost,
+		"/collections/"+collectionID+"/active-liveness",
+		&buf, mw.FormDataContentType())
+	if err != nil {
+		return nil, err
+	}
+	var result ActiveLivenessResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("livexface: decode active liveness result: %w", err)
+	}
+	return &result, nil
+}
+
 // Compare performs a pairwise comparison of two face images without enrolling
 // either into a collection.
 func (r *FacesResource) Compare(ctx context.Context, input CompareInput) (*VerifyResult, error) {
@@ -430,8 +466,9 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 	mw := multipart.NewWriter(&buf)
 
 	type entry struct {
-		ExternalID string                 `json:"externalId"`
-		Metadata   map[string]interface{} `json:"metadata"`
+		ExternalID    string                 `json:"externalId"`
+		Metadata      map[string]interface{} `json:"metadata"`
+		LivenessToken string                 `json:"livenessToken,omitempty"`
 	}
 	entries := make([]entry, 0, len(items))
 
@@ -445,7 +482,7 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 		if meta == nil {
 			meta = map[string]interface{}{}
 		}
-		entries = append(entries, entry{ExternalID: item.ExternalID, Metadata: meta})
+		entries = append(entries, entry{ExternalID: item.ExternalID, Metadata: meta, LivenessToken: item.LivenessToken})
 	}
 
 	entriesJSON, err := json.Marshal(entries)
@@ -501,8 +538,9 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 	mw := multipart.NewWriter(&buf)
 
 	type entry struct {
-		ExternalID string                 `json:"externalId"`
-		Metadata   map[string]interface{} `json:"metadata"`
+		ExternalID    string                 `json:"externalId"`
+		Metadata      map[string]interface{} `json:"metadata"`
+		LivenessToken string                 `json:"livenessToken,omitempty"`
 	}
 	entries := make([]entry, 0, len(items))
 
@@ -516,7 +554,7 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 		if meta == nil {
 			meta = map[string]interface{}{}
 		}
-		entries = append(entries, entry{ExternalID: item.ExternalID, Metadata: meta})
+		entries = append(entries, entry{ExternalID: item.ExternalID, Metadata: meta, LivenessToken: item.LivenessToken})
 	}
 
 	entriesJSON, err := json.Marshal(entries)
