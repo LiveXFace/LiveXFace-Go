@@ -24,6 +24,9 @@ type APIError struct {
 	Message    string
 	StatusCode int
 	RequestID  string
+	// Details is the error's machine-readable context when the API sends one,
+	// e.g. faceCount and faces for MULTIPLE_FACES. Nil otherwise.
+	Details map[string]interface{}
 }
 
 func (e *APIError) Error() string {
@@ -92,8 +95,9 @@ type apiEnvelope struct {
 	Data      json.RawMessage `json:"data"`
 	RequestID string          `json:"requestId"`
 	Error     *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code    string                 `json:"code"`
+		Message string                 `json:"message"`
+		Details map[string]interface{} `json:"details"`
 	} `json:"error"`
 }
 
@@ -153,6 +157,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 		if env.Error != nil {
 			apiErr.Code = env.Error.Code
 			apiErr.Message = env.Error.Message
+			apiErr.Details = env.Error.Details
 		} else {
 			apiErr.Code = "UNKNOWN_ERROR"
 			apiErr.Message = "an unknown error occurred"
