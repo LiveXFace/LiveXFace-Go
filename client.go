@@ -20,6 +20,11 @@ import (
 
 const defaultBaseURL = "https://api.livexface.com/api/v1"
 
+// ContractVersion is the API contract version (info.version of /openapi.json)
+// this SDK release is validated against. The contract is pinned in
+// contract/openapi-<version>.json and checked by the test suite.
+const ContractVersion = "1.0.0"
+
 // ─── Error ────────────────────────────────────────────────────────────────────
 
 // APIError is returned when the server responds with a non-successful payload.
