@@ -4,13 +4,17 @@ package livexface
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +31,9 @@ type APIError struct {
 	// Details is the error's machine-readable context when the API sends one,
 	// e.g. faceCount and faces for MULTIPLE_FACES. Nil otherwise.
 	Details map[string]interface{}
+	// RetryAfter is the number of seconds the response's Retry-After header
+	// asks the caller to wait (sent with 429 and 503). Nil when it had none.
+	RetryAfter *int
 }
 
 func (e *APIError) Error() string {
@@ -40,6 +47,11 @@ type Client struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+
+	maxRetries    int
+	maxRetryDelay time.Duration
+	// sleep waits between retries; tests replace it to avoid real waits.
+	sleep func(context.Context, time.Duration) error
 
 	// Faces provides operations for face enrollment and recognition.
 	// Collections are created and managed in the dashboard; the API has no
@@ -71,6 +83,31 @@ func WithHTTPClient(hc *http.Client) Option {
 	}
 }
 
+// WithRetries turns on automatic retries, making up to maxRetries attempts
+// after the first. Retries are off by default. When on:
+//   - 429 and 503 responses are retried after their Retry-After delay, or an
+//     exponential backoff with jitter when they give none, capped by
+//     WithMaxRetryDelay;
+//   - network errors and other 5xx responses are retried only for GET, PATCH
+//     and DELETE requests and for requests that carry an idempotency key;
+//   - other 4xx responses are never retried;
+//   - Register, BatchRegister and BatchRegisterAsync send one idempotency key
+//     on every attempt of a call, generating one when the caller gave none.
+//
+// After the last attempt the last error is returned.
+func WithRetries(maxRetries int) Option {
+	return func(c *Client) {
+		c.maxRetries = maxRetries
+	}
+}
+
+// WithMaxRetryDelay caps the wait before a retry. The default is 60 seconds.
+func WithMaxRetryDelay(d time.Duration) Option {
+	return func(c *Client) {
+		c.maxRetryDelay = max(d, 0)
+	}
+}
+
 // New creates a new Client with the provided API key and optional configuration.
 func New(apiKey string, opts ...Option) *Client {
 	c := &Client{
@@ -79,12 +116,59 @@ func New(apiKey string, opts ...Option) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		maxRetryDelay: 60 * time.Second,
+		sleep:         sleepContext,
 	}
 	for _, o := range opts {
 		o(c)
 	}
 	c.Faces = &FacesResource{c: c}
 	return c
+}
+
+// ─── Idempotency keys ─────────────────────────────────────────────────────────
+
+// CallOption configures a single enrolment call.
+type CallOption func(*callOptions)
+
+type callOptions struct {
+	idempotencyKey string
+}
+
+// WithIdempotencyKey sends key as the Idempotency-Key header. The API then
+// performs the call at most once per key: a repeat within 24 hours gets the
+// first response back (with the header Idempotent-Replayed: true). Reusing a
+// key for a different request fails with IDEMPOTENCY_KEY_MISMATCH (422), and
+// while the first request is still running with IDEMPOTENCY_KEY_IN_USE (409).
+// Keys are 1-255 printable ASCII characters; NewIdempotencyKey makes one.
+func WithIdempotencyKey(key string) CallOption {
+	return func(o *callOptions) {
+		o.idempotencyKey = key
+	}
+}
+
+// NewIdempotencyKey returns a random UUID v4 for use with WithIdempotencyKey.
+func NewIdempotencyKey() string {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		panic("livexface: crypto/rand: " + err.Error())
+	}
+	b[6] = b[6]&0x0f | 0x40 // version 4
+	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// idempotencyKey returns the key for one enrolment call: the caller's, else a
+// fresh one when retries are on (so every attempt shares it), else none.
+func (c *Client) idempotencyKey(opts []CallOption) string {
+	var o callOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+	if o.idempotencyKey == "" && c.maxRetries > 0 {
+		return NewIdempotencyKey()
+	}
+	return o.idempotencyKey
 }
 
 // ─── Internal HTTP helper ─────────────────────────────────────────────────────
@@ -101,19 +185,43 @@ type apiEnvelope struct {
 	} `json:"error"`
 }
 
-// do executes an HTTP request and unwraps the LiveXFace response envelope.
-// On a non-successful response it returns a *APIError.
-func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (json.RawMessage, error) {
-	url := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return nil, fmt.Errorf("livexface: build request: %w", err)
-	}
-	req.Header.Set("X-API-Key", c.apiKey)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
+// do executes an HTTP request, retrying it as the client's retry policy
+// allows, and unwraps the LiveXFace response envelope. On a non-successful
+// response it returns a *APIError. body is sent whole on every attempt; a
+// non-empty idempotencyKey is sent as the Idempotency-Key header.
+func (c *Client) do(ctx context.Context, method, path string, body []byte, contentType, idempotencyKey string) (json.RawMessage, error) {
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("livexface: build request: %w", err)
+		}
+		req.Header.Set("X-API-Key", c.apiKey)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if idempotencyKey != "" {
+			req.Header.Set("Idempotency-Key", idempotencyKey)
+		}
 
+		data, err := c.send(req)
+		if err == nil || attempt >= c.maxRetries || ctx.Err() != nil {
+			return data, err
+		}
+		safe := idempotencyKey != "" || method == http.MethodGet ||
+			method == http.MethodPatch || method == http.MethodDelete
+		delay, ok := c.retryDelay(err, attempt, safe)
+		if !ok {
+			return nil, err
+		}
+		if err := c.sleep(ctx, delay); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// send performs one attempt. Its error is either a *APIError or a network
+// error.
+func (c *Client) send(req *http.Request) (json.RawMessage, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("livexface: http: %w", err)
@@ -131,6 +239,8 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 		return nil, nil
 	}
 
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		// An unknown route answers with a plain-text 404, not the JSON
@@ -140,6 +250,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 				Code:       fmt.Sprintf("HTTP_%d", resp.StatusCode),
 				Message:    fmt.Sprintf("request failed with HTTP %d", resp.StatusCode),
 				StatusCode: resp.StatusCode,
+				RetryAfter: retryAfter,
 			}
 		}
 		return nil, &APIError{
@@ -153,6 +264,7 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
 			RequestID:  env.RequestID,
+			RetryAfter: retryAfter,
 		}
 		if env.Error != nil {
 			apiErr.Code = env.Error.Code
@@ -168,19 +280,69 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	return env.Data, nil
 }
 
+// retryDelay reports whether a failed attempt may be retried and how long to
+// wait first. safe means repeating the request is harmless: a read, a
+// metadata update, a deletion or a request with an idempotency key.
+func (c *Client) retryDelay(err error, attempt int, safe bool) (time.Duration, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch s := apiErr.StatusCode; {
+		case s == http.StatusTooManyRequests || s == http.StatusServiceUnavailable:
+			if ra := apiErr.RetryAfter; ra != nil {
+				if float64(*ra) >= c.maxRetryDelay.Seconds() {
+					return c.maxRetryDelay, true
+				}
+				return time.Duration(*ra) * time.Second, true
+			}
+		case s >= 500 && safe:
+		default:
+			return 0, false
+		}
+	} else if !safe {
+		return 0, false // network error on a request that may not be repeated
+	}
+	// Exponential backoff, 0.5 s * 2^attempt capped, with full jitter.
+	d := c.maxRetryDelay
+	if attempt < 32 {
+		d = min(500*time.Millisecond<<attempt, d)
+	}
+	return time.Duration(rand.Int64N(int64(d) + 1)), true
+}
+
+// parseRetryAfter reads a Retry-After header given in seconds; nil when it is
+// absent or not a non-negative integer.
+func parseRetryAfter(h string) *int {
+	n, err := strconv.Atoi(strings.TrimSpace(h))
+	if err != nil || n < 0 {
+		return nil
+	}
+	return &n
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // doJSON sends a request with a JSON body.
 func (c *Client) doJSON(ctx context.Context, method, path string, payload interface{}) (json.RawMessage, error) {
-	var bodyReader io.Reader
+	var body []byte
 	contentType := ""
 	if payload != nil {
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return nil, fmt.Errorf("livexface: marshal body: %w", err)
 		}
-		bodyReader = bytes.NewReader(b)
+		body = b
 		contentType = "application/json"
 	}
-	return c.do(ctx, method, path, bodyReader, contentType)
+	return c.do(ctx, method, path, body, contentType, "")
 }
 
 // ─── Multipart helpers ────────────────────────────────────────────────────────
@@ -224,8 +386,9 @@ type FacesResource struct {
 	c *Client
 }
 
-// Register enrolls a new face into a collection.
-func (r *FacesResource) Register(ctx context.Context, collectionID string, input RegisterInput) (*Face, error) {
+// Register enrolls a new face into a collection. Pass WithIdempotencyKey to
+// make a repeated call safe.
+func (r *FacesResource) Register(ctx context.Context, collectionID string, input RegisterInput, opts ...CallOption) (*Face, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -254,7 +417,7 @@ func (r *FacesResource) Register(ctx context.Context, collectionID string, input
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/faces",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), r.c.idempotencyKey(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +435,7 @@ func (r *FacesResource) List(ctx context.Context, collectionID string, opts List
 		limit = 20
 	}
 	path := fmt.Sprintf("/collections/%s/faces?limit=%d&offset=%d", collectionID, limit, opts.Offset)
-	data, err := r.c.do(ctx, http.MethodGet, path, nil, "")
+	data, err := r.c.do(ctx, http.MethodGet, path, nil, "", "")
 	if err != nil {
 		return nil, 0, err
 	}
@@ -290,7 +453,7 @@ func (r *FacesResource) List(ctx context.Context, collectionID string, opts List
 // Get retrieves a face by its ID.
 func (r *FacesResource) Get(ctx context.Context, collectionID, faceID string) (*Face, error) {
 	data, err := r.c.do(ctx, http.MethodGet,
-		"/collections/"+collectionID+"/faces/"+faceID, nil, "")
+		"/collections/"+collectionID+"/faces/"+faceID, nil, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +467,7 @@ func (r *FacesResource) Get(ctx context.Context, collectionID, faceID string) (*
 // Delete removes a face from a collection.
 func (r *FacesResource) Delete(ctx context.Context, collectionID, faceID string) error {
 	_, err := r.c.do(ctx, http.MethodDelete,
-		"/collections/"+collectionID+"/faces/"+faceID, nil, "")
+		"/collections/"+collectionID+"/faces/"+faceID, nil, "", "")
 	return err
 }
 
@@ -331,7 +494,7 @@ func (r *FacesResource) Verify(ctx context.Context, collectionID string, input V
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/verify",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +530,7 @@ func (r *FacesResource) Identify(ctx context.Context, collectionID string, input
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/identify",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +554,7 @@ func (r *FacesResource) Liveness(ctx context.Context, collectionID string, image
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/liveness",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +585,7 @@ func (r *FacesResource) ActiveLiveness(ctx context.Context, collectionID string,
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/active-liveness",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -454,7 +617,7 @@ func (r *FacesResource) Compare(ctx context.Context, input CompareInput) (*Verif
 	}
 	mw.Close()
 
-	data, err := r.c.do(ctx, http.MethodPost, "/compare", &buf, mw.FormDataContentType())
+	data, err := r.c.do(ctx, http.MethodPost, "/compare", buf.Bytes(), mw.FormDataContentType(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -465,8 +628,9 @@ func (r *FacesResource) Compare(ctx context.Context, input CompareInput) (*Verif
 	return &result, nil
 }
 
-// BatchRegister enrolls up to 20 faces in a single request.
-func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, items []BatchItem) (*BatchResponse, error) {
+// BatchRegister enrolls up to 20 faces in a single request. Pass
+// WithIdempotencyKey to make a repeated call safe.
+func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, items []BatchItem, opts ...CallOption) (*BatchResponse, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -501,7 +665,7 @@ func (r *FacesResource) BatchRegister(ctx context.Context, collectionID string, 
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/faces/batch",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), r.c.idempotencyKey(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +688,7 @@ func (r *FacesResource) Attributes(ctx context.Context, collectionID string, ima
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/attributes",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -537,8 +701,9 @@ func (r *FacesResource) Attributes(ctx context.Context, collectionID string, ima
 
 // BatchRegisterAsync submits up to 100 faces for asynchronous registration.
 // It returns the created job immediately; poll GetBatchJob until the job's
-// Status is "done" or "failed".
-func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID string, items []BatchItem) (*BatchJob, error) {
+// Status is "done" or "failed". Pass WithIdempotencyKey to make a repeated call
+// safe: a repeat returns the same job instead of creating a second one.
+func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID string, items []BatchItem, opts ...CallOption) (*BatchJob, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -573,7 +738,7 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 
 	data, err := r.c.do(ctx, http.MethodPost,
 		"/collections/"+collectionID+"/faces/batch-async",
-		&buf, mw.FormDataContentType())
+		buf.Bytes(), mw.FormDataContentType(), r.c.idempotencyKey(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +753,7 @@ func (r *FacesResource) BatchRegisterAsync(ctx context.Context, collectionID str
 // an async batch registration job.
 func (r *FacesResource) GetBatchJob(ctx context.Context, collectionID, jobID string) (*BatchJob, error) {
 	data, err := r.c.do(ctx, http.MethodGet,
-		"/collections/"+collectionID+"/batch/"+jobID, nil, "")
+		"/collections/"+collectionID+"/batch/"+jobID, nil, "", "")
 	if err != nil {
 		return nil, err
 	}
