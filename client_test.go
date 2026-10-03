@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"sync"
 	"testing"
 	"time"
 )
@@ -201,4 +204,267 @@ func TestAPIErrorExposesDetails(t *testing.T) {
 	if apiErr.Code != "MULTIPLE_FACES" || apiErr.Details["faceCount"] != float64(2) {
 		t.Fatalf("details not exposed: %+v", apiErr)
 	}
+	if apiErr.RetryAfter != nil {
+		t.Errorf("RetryAfter = %d without a Retry-After header", *apiErr.RetryAfter)
+	}
+}
+
+// ─── Idempotency keys and retries ─────────────────────────────────────────────
+
+const faceJSON = `{"success":true,"data":{"id":"face_1","externalId":"u1"}}`
+
+// reply answers with status, body and header name/value pairs.
+func reply(status int, body string, header ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		for i := 0; i+1 < len(header); i += 2 {
+			w.Header().Set(header[i], header[i+1])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}
+}
+
+// drop reads the request, then closes the connection without a response.
+func drop(w http.ResponseWriter, r *http.Request) {
+	_, _ = io.Copy(io.Discard, r.Body)
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		panic(err)
+	}
+	conn.Close()
+}
+
+func apiError(status int, code string) string {
+	return fmt.Sprintf(`{"success":false,"requestId":"req_%d","error":{"code":%q,"message":"x"}}`, status, code)
+}
+
+type script struct {
+	mu    sync.Mutex
+	keys  []string        // Idempotency-Key of each request, "" when absent
+	slept []time.Duration // delays passed to the client's sleep
+}
+
+func (s *script) requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.keys...)
+}
+
+// scripted answers the n-th request with steps[n] and records each request's
+// Idempotency-Key. The client's sleep is replaced so retries do not wait.
+func scripted(t *testing.T, opts []Option, steps ...http.HandlerFunc) (*Client, *script) {
+	t.Helper()
+	s := &script{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		n := len(s.keys)
+		s.keys = append(s.keys, r.Header.Get("Idempotency-Key"))
+		s.mu.Unlock()
+		if n >= len(steps) {
+			t.Errorf("unexpected request %d", n+1)
+			reply(http.StatusInternalServerError, apiError(500, "INTERNAL_ERROR"))(w, r)
+			return
+		}
+		steps[n](w, r)
+	}))
+	t.Cleanup(srv.Close)
+	c := New("lxf_test", append([]Option{WithBaseURL(srv.URL)}, opts...)...)
+	c.sleep = func(_ context.Context, d time.Duration) error {
+		s.slept = append(s.slept, d)
+		return nil
+	}
+	return c, s
+}
+
+var registerInput = RegisterInput{ExternalID: "u1", Image: []byte{0xff, 0xd8}}
+
+var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestRateLimitedExposesRetryAfter(t *testing.T) {
+	c, s := scripted(t, nil,
+		reply(http.StatusTooManyRequests, apiError(429, "RATE_LIMIT_EXCEEDED"), "Retry-After", "12"))
+
+	_, err := c.Faces.Identify(context.Background(), "col_1", IdentifyInput{Image: []byte{1}})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %v", err)
+	}
+	if apiErr.StatusCode != 429 || apiErr.Code != "RATE_LIMIT_EXCEEDED" || apiErr.RequestID != "req_429" {
+		t.Errorf("error = %+v", apiErr)
+	}
+	if apiErr.RetryAfter == nil || *apiErr.RetryAfter != 12 {
+		t.Errorf("RetryAfter = %v, want 12", apiErr.RetryAfter)
+	}
+	if n := len(s.requests()); n != 1 {
+		t.Errorf("%d requests, want 1", n)
+	}
+}
+
+func TestRetryBusyEngineWithGeneratedKey(t *testing.T) {
+	c, s := scripted(t, []Option{WithRetries(2)},
+		reply(http.StatusServiceUnavailable, apiError(503, "SERVICE_BUSY"), "Retry-After", "5"),
+		reply(http.StatusCreated, faceJSON))
+
+	face, err := c.Faces.Register(context.Background(), "col_1", registerInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if face.ID != "face_1" {
+		t.Errorf("face = %+v", face)
+	}
+	keys := s.requests()
+	if len(keys) != 2 || !uuidV4.MatchString(keys[0]) || keys[1] != keys[0] {
+		t.Errorf("keys = %q, want one generated key sent twice", keys)
+	}
+	if len(s.slept) != 1 || s.slept[0] != 5*time.Second {
+		t.Errorf("slept %v, want [5s]", s.slept)
+	}
+}
+
+func TestRetryDroppedConnectionWithCallerKey(t *testing.T) {
+	c, s := scripted(t, []Option{WithRetries(2)},
+		drop,
+		reply(http.StatusCreated, faceJSON, "Idempotent-Replayed", "true"))
+
+	face, err := c.Faces.Register(context.Background(), "col_1", registerInput, WithIdempotencyKey("enrol-u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if face.ID != "face_1" {
+		t.Errorf("face = %+v", face)
+	}
+	if keys := s.requests(); len(keys) != 2 || keys[0] != "enrol-u1" || keys[1] != "enrol-u1" {
+		t.Errorf("keys = %q, want the caller's key on both attempts", keys)
+	}
+}
+
+func TestNoRetryOnValidationError(t *testing.T) {
+	c, s := scripted(t, []Option{WithRetries(3)},
+		reply(http.StatusUnprocessableEntity, apiError(422, "NO_FACE_DETECTED")))
+
+	_, err := c.Faces.Register(context.Background(), "col_1", registerInput)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "NO_FACE_DETECTED" {
+		t.Fatalf("want NO_FACE_DETECTED, got %v", err)
+	}
+	if n := len(s.requests()); n != 1 {
+		t.Errorf("%d requests, want 1", n)
+	}
+}
+
+func TestRetriesStopAndSurfaceLastError(t *testing.T) {
+	busy := reply(http.StatusServiceUnavailable, apiError(503, "SERVICE_BUSY"))
+	c, s := scripted(t, []Option{WithRetries(2), WithMaxRetryDelay(time.Second)}, busy, busy, busy)
+
+	_, err := c.Faces.Register(context.Background(), "col_1", registerInput)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 503 {
+		t.Fatalf("want the 503, got %v", err)
+	}
+	if n := len(s.requests()); n != 3 {
+		t.Errorf("%d requests, want 3", n)
+	}
+	for _, d := range s.slept {
+		if d < 0 || d > time.Second {
+			t.Errorf("backoff %v outside [0, 1s]", d)
+		}
+	}
+}
+
+func TestIdempotencyKeyHeader(t *testing.T) {
+	ok := map[string]string{
+		"register": faceJSON,
+		"batch":    `{"success":true,"data":{"succeeded":1,"failed":0,"results":[]}}`,
+		"async":    `{"success":true,"data":{"id":"job_1","status":"queued"}}`,
+	}
+	call := func(c *Client, name string, opts ...CallOption) error {
+		ctx, items := context.Background(), []BatchItem{{ExternalID: "a", Image: []byte{1}}}
+		var err error
+		switch name {
+		case "register":
+			_, err = c.Faces.Register(ctx, "col_1", registerInput, opts...)
+		case "batch":
+			_, err = c.Faces.BatchRegister(ctx, "col_1", items, opts...)
+		case "async":
+			_, err = c.Faces.BatchRegisterAsync(ctx, "col_1", items, opts...)
+		}
+		return err
+	}
+	for name, body := range ok {
+		t.Run(name+" caller key", func(t *testing.T) {
+			c, s := scripted(t, nil, reply(http.StatusCreated, body))
+			if err := call(c, name, WithIdempotencyKey("k-123")); err != nil {
+				t.Fatal(err)
+			}
+			if keys := s.requests(); keys[0] != "k-123" {
+				t.Errorf("Idempotency-Key = %q, want k-123", keys[0])
+			}
+		})
+		t.Run(name+" no key, retries off", func(t *testing.T) {
+			c, s := scripted(t, nil, reply(http.StatusCreated, body))
+			if err := call(c, name); err != nil {
+				t.Fatal(err)
+			}
+			if keys := s.requests(); keys[0] != "" {
+				t.Errorf("Idempotency-Key = %q, want none", keys[0])
+			}
+		})
+	}
+}
+
+func TestNewIdempotencyKey(t *testing.T) {
+	a, b := NewIdempotencyKey(), NewIdempotencyKey()
+	if !uuidV4.MatchString(a) || !uuidV4.MatchString(b) || a == b {
+		t.Errorf("keys %q and %q, want two different UUID v4s", a, b)
+	}
+}
+
+func TestRetryPolicyForPlainRequests(t *testing.T) {
+	identify := func(c *Client) error {
+		_, err := c.Faces.Identify(context.Background(), "col_1", IdentifyInput{Image: []byte{1}})
+		return err
+	}
+	matches := reply(http.StatusOK, `{"success":true,"data":{"matches":[]}}`)
+
+	t.Run("POST not retried on a dropped connection", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(2)}, drop)
+		var apiErr *APIError
+		if err := identify(c); err == nil || errors.As(err, &apiErr) {
+			t.Fatalf("want a network error, got %v", err)
+		}
+		if keys := s.requests(); len(keys) != 1 || keys[0] != "" {
+			t.Errorf("requests = %q, want one without a key", keys)
+		}
+	})
+	t.Run("POST not retried on 500", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(2)},
+			reply(http.StatusInternalServerError, apiError(500, "INTERNAL_ERROR")))
+		if err := identify(c); err == nil {
+			t.Fatal("want an error")
+		}
+		if n := len(s.requests()); n != 1 {
+			t.Errorf("%d requests, want 1", n)
+		}
+	})
+	t.Run("POST retried on 503", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(2)},
+			reply(http.StatusServiceUnavailable, apiError(503, "SERVICE_BUSY")), matches)
+		if err := identify(c); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(s.requests()); n != 2 {
+			t.Errorf("%d requests, want 2", n)
+		}
+	})
+	t.Run("GET retried on a dropped connection", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(2)}, drop, reply(http.StatusOK, faceJSON))
+		if _, err := c.Faces.Get(context.Background(), "col_1", "face_1"); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(s.requests()); n != 2 {
+			t.Errorf("%d requests, want 2", n)
+		}
+	})
 }

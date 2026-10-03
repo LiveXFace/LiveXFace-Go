@@ -73,6 +73,8 @@ client := livexface.New(
     "lxf_live_xxxx",
     livexface.WithBaseURL("https://your-instance.example.com/api/v1"),
     livexface.WithTimeout(15 * time.Second),
+    livexface.WithRetries(3),                    // off by default; see Production retries
+    livexface.WithMaxRetryDelay(30 * time.Second), // default 60s
 )
 ```
 
@@ -82,7 +84,7 @@ client := livexface.New(
 
 | Method | Description |
 |--------|-------------|
-| `Faces.Register(ctx, collectionID, RegisterInput)` | Enroll a face into a collection |
+| `Faces.Register(ctx, collectionID, RegisterInput, ...CallOption)` | Enroll a face into a collection |
 | `Faces.List(ctx, collectionID, ListOptions)` | Paginated list of faces; returns `([]*Face, total, error)` |
 | `Faces.Get(ctx, collectionID, faceID)` | Retrieve a face by ID |
 | `Faces.Delete(ctx, collectionID, faceID)` | Remove a face from a collection |
@@ -91,7 +93,8 @@ client := livexface.New(
 | `Faces.Liveness(ctx, collectionID, image, filename)` | Passive liveness detection |
 | `Faces.ActiveLiveness(ctx, collectionID, []LivenessFrame)` | Active liveness over 5–50 frames; returns a liveness token when passed |
 | `Faces.Compare(ctx, CompareInput)` | Compare two images without enrolling |
-| `Faces.BatchRegister(ctx, collectionID, []BatchItem)` | Enroll up to 20 faces in one request |
+| `Faces.BatchRegister(ctx, collectionID, []BatchItem, ...CallOption)` | Enroll up to 20 faces in one request |
+| `Faces.BatchRegisterAsync(ctx, collectionID, []BatchItem, ...CallOption)` | Queue up to 100 faces; returns a job to poll with `GetBatchJob` |
 
 ### Liveness-gated enrolment
 
@@ -144,8 +147,68 @@ if err != nil {
         fmt.Println("code:", apiErr.Code)
         fmt.Println("status:", apiErr.StatusCode)
         fmt.Println("requestId:", apiErr.RequestID)
+        fmt.Println("details:", apiErr.Details)       // nil when the API sent none
+        if apiErr.RetryAfter != nil {                    // seconds, from Retry-After on 429/503
+            fmt.Println("retry after:", *apiErr.RetryAfter)
+        }
     }
 }
+```
+
+## Idempotent requests
+
+`Register`, `BatchRegister` and `BatchRegisterAsync` accept
+`livexface.WithIdempotencyKey(key)`, sent as the `Idempotency-Key` header.
+The API then performs the call at most once per key for 24 hours: a repeat of
+the same request gets the first response back, marked with the response header
+`Idempotent-Replayed: true`, so a retried enrolment never creates a duplicate
+face or a second batch job. `livexface.NewIdempotencyKey()` returns a random
+UUID v4; generate one per logical enrolment and keep it for every retry of it.
+
+- The same key with a different request fails with `IDEMPOTENCY_KEY_MISMATCH` (422).
+- The same key while the first request is still running fails with
+  `IDEMPOTENCY_KEY_IN_USE` (409).
+- 429 and 5xx responses are not remembered, so retrying with the same key runs
+  the request again.
+- Any other response, including a 4xx, is remembered and replayed. To try again
+  after fixing the request (say, a new image after `NO_FACE_DETECTED`), use a new key.
+
+## Production retries
+
+Retries are off by default. `WithRetries(n)` makes up to `n` attempts after the
+first:
+
+- 429 and 503 are retried after their `Retry-After` delay, or an exponential
+  backoff with jitter (0.5 s × 2ⁿ) when there is none, capped by
+  `WithMaxRetryDelay` (60 s by default).
+- Network errors and other 5xx are retried only for GET, PATCH and DELETE calls
+  and for calls with an idempotency key, never for other POSTs such as
+  `Identify` or `Verify`.
+- Other 4xx responses are never retried.
+- The enrolment methods send the same idempotency key on every attempt, and
+  generate one when you pass none.
+
+After the last attempt the last error is returned.
+
+```go
+client := livexface.New(os.Getenv("LIVEXFACE_API_KEY"), livexface.WithRetries(3))
+
+key := livexface.NewIdempotencyKey() // store it with the job to reuse it after a crash
+face, err := client.Faces.Register(ctx, collID, livexface.RegisterInput{
+    ExternalID: "user_42",
+    Image:      imageBytes,
+}, livexface.WithIdempotencyKey(key))
+if err != nil {
+    var apiErr *livexface.APIError
+    if errors.As(err, &apiErr) {
+        if apiErr.RetryAfter != nil {
+            log.Printf("still busy, retry in %ds (request %s)", *apiErr.RetryAfter, apiErr.RequestID)
+        }
+        log.Fatalf("%s (HTTP %d, request %s)", apiErr.Code, apiErr.StatusCode, apiErr.RequestID)
+    }
+    log.Fatal(err) // network error after the last attempt
+}
+fmt.Println("Enrolled:", face.ID)
 ```
 
 ## License
