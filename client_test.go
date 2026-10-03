@@ -3,6 +3,7 @@ package livexface
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -181,4 +182,23 @@ func TestBatchEntriesLivenessToken(t *testing.T) {
 		}
 		check(t, got.Fields["entries"])
 	})
+}
+
+func TestAPIErrorExposesDetails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"success":false,"requestId":"r-1","error":{"code":"MULTIPLE_FACES","message":"multiple faces detected","details":{"faceCount":2,"faces":[]}}}`))
+	}))
+	defer srv.Close()
+
+	c := New("lxf_test_key", WithBaseURL(srv.URL))
+	_, err := c.Faces.Register(context.Background(), "col", RegisterInput{Image: []byte("img"), Filename: "a.jpg"})
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %v", err)
+	}
+	if apiErr.Code != "MULTIPLE_FACES" || apiErr.Details["faceCount"] != float64(2) {
+		t.Fatalf("details not exposed: %+v", apiErr)
+	}
 }
