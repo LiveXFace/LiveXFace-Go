@@ -17,6 +17,8 @@ go get github.com/livexface/livexface-go
 
 Requires Go 1.22 or later.
 
+Validated against API contract 1.0.0 (`/openapi.json` `info.version`), exposed as `livexface.ContractVersion`. The test suite calls every client method against the pinned contract in `contract/` and fails if a method or path is missing from it or a required field is not sent; to move to a new contract, copy the release asset `openapi-<version>.json` into `contract/` and update `CONTRACT_VERSION` and the `ContractVersion` constant.
+
 ## Quick Start
 
 ```go
