@@ -17,7 +17,9 @@ go get github.com/livexface/livexface-go
 
 Requires Go 1.22 or later.
 
-Validated against API contract 1.0.0 (`/openapi.json` `info.version`), exposed as `livexface.ContractVersion`. The test suite calls every client method against the pinned contract in `contract/` and fails if a method or path is missing from it or a required field is not sent; to move to a new contract, copy the release asset `openapi-<version>.json` into `contract/` and update `CONTRACT_VERSION` and the `ContractVersion` constant.
+This is the 1.0.0 release (see [CHANGELOG.md](CHANGELOG.md)); a Go module has no version in `go.mod`, so the version is the `v1.0.0` release tag.
+
+Validated against API contract 2.0.0 (`/openapi.json` `info.version`), exposed as `livexface.ContractVersion`. The test suite calls every client method against the pinned contract in `contract/` and fails if a method or path is missing from it or a required field is not sent; to move to a new contract, copy the release asset `openapi-<version>.json` into `contract/` and update `CONTRACT_VERSION` and the `ContractVersion` constant.
 
 ## Quick Start
 
@@ -93,7 +95,9 @@ client := livexface.New(
 | `Faces.Verify(ctx, collectionID, VerifyInput)` | 1:1 verification against a stored face |
 | `Faces.Identify(ctx, collectionID, IdentifyInput)` | 1:N search — return top-K matches |
 | `Faces.Liveness(ctx, collectionID, image, filename)` | Passive liveness detection |
-| `Faces.ActiveLiveness(ctx, collectionID, []LivenessFrame)` | Active liveness over 5–50 frames; returns a liveness token when passed |
+| `Faces.ActiveLiveness(ctx, collectionID, []LivenessFrame)` | Stateless active liveness over 5–50 frames; a verdict only, no token |
+| `Faces.CreateLivenessSession(ctx, collectionID)` | Start a liveness session; returns the steps to perform and its expiry |
+| `Faces.CompleteLivenessSession(ctx, collectionID, sessionID, []LivenessFrame, mirrored)` | Submit 5–50 frames for a session; returns the verdict, per-step results and, on a pass, a liveness token |
 | `Faces.Compare(ctx, CompareInput)` | Compare two images without enrolling |
 | `Faces.BatchRegister(ctx, collectionID, []BatchItem, ...CallOption)` | Enroll up to 20 faces in one request |
 | `Faces.BatchRegisterAsync(ctx, collectionID, []BatchItem, ...CallOption)` | Queue up to 100 faces; returns a job to poll with `GetBatchJob` |
@@ -101,31 +105,65 @@ client := livexface.New(
 ### Liveness-gated enrolment
 
 Collections that require liveness reject enrolment without a token from a
-passed active liveness check (`LIVENESS_TOKEN_REQUIRED`). Tokens are
-single-use, expire after 5 minutes, and are bound to the organization and
-collection. A token that is expired, reused or for another collection returns
-`LIVENESS_TOKEN_INVALID`; a token whose face does not match the enrolled image
-returns `LIVENESS_FACE_MISMATCH`.
+passed liveness session (`LIVENESS_TOKEN_REQUIRED`). The server picks the steps
+of each session (one blink and one or two head turns, in random order), so
+frames prepared in advance from a photo do not pass. `ActiveLiveness` is a
+stateless verdict and issues no token.
+
+1. Create a session. It expires 60 seconds later by default.
+2. Show its challenges to the person in order. `turn_left` and `turn_right`
+   are the person's own left and right.
+3. Capture 5–50 frames while they perform the steps.
+4. Complete the session with the frames, once. Pass `mirrored: true` when the
+   frames are horizontally mirrored, as a selfie preview is.
+5. Enrol with the token.
 
 ```go
-frames := make([]livexface.LivenessFrame, 0, len(jpegFrames))
-for _, f := range jpegFrames { // at least 5 frames captured while the user blinks and turns
-    frames = append(frames, livexface.LivenessFrame{Image: f})
-}
-check, err := client.Faces.ActiveLiveness(ctx, collID, frames)
+session, err := client.Faces.CreateLivenessSession(ctx, collID)
 if err != nil {
     log.Fatal(err)
 }
-if !check.IsLive {
+prompts := map[livexface.LivenessStepType]string{
+    livexface.LivenessStepBlink:     "Blink",
+    livexface.LivenessStepTurnLeft:  "Turn your head to your left",
+    livexface.LivenessStepTurnRight: "Turn your head to your right",
+}
+for _, ch := range session.Challenges {
+    showPrompt(prompts[ch.Type]) // your UI, while the camera captures frames
+}
+
+frames := make([]livexface.LivenessFrame, 0, len(jpegFrames))
+for _, f := range jpegFrames {
+    frames = append(frames, livexface.LivenessFrame{Image: f})
+}
+result, err := client.Faces.CompleteLivenessSession(ctx, collID, session.SessionID, frames, false)
+if err != nil {
+    log.Fatal(err) // on LIVENESS_SESSION_INVALID or SERVICE_BUSY, create a new session
+}
+if !result.IsLive {
+    for _, st := range result.Steps {
+        fmt.Printf("%s passed=%v\n", st.Type, st.Passed)
+    }
     log.Fatal("liveness check failed")
 }
 
 face, err := client.Faces.Register(ctx, collID, livexface.RegisterInput{
     ExternalID:    "user_42",
     Image:         jpegFrames[0],
-    LivenessToken: check.LivenessToken,
+    LivenessToken: result.LivenessToken,
 })
 ```
+
+A session is judged at most once. Any submission uses it up except one with
+fewer than 5 frames (`IMAGE_REQUIRED`, 400), which you may resubmit. A session
+that is unknown, expired, already submitted or for another collection fails with
+`LIVENESS_SESSION_INVALID` (422); create a new session. A pass whose token the
+server could not store has `IsLive` true and an empty `LivenessToken`.
+
+Liveness tokens are single-use, expire after 5 minutes and are bound to the
+organization and collection. A token that is expired, reused or for another
+collection returns `LIVENESS_TOKEN_INVALID`; a token whose face does not match
+the enrolled image returns `LIVENESS_FACE_MISMATCH`.
 
 `BatchItem` has the same optional `LivenessToken` field for `BatchRegister`
 and `BatchRegisterAsync`.
@@ -157,6 +195,10 @@ if err != nil {
 }
 ```
 
+`CompleteLivenessSession` fails with `LIVENESS_SESSION_INVALID` (HTTP 422)
+when the session is unknown, expired, already submitted or bound to another
+collection. Check `apiErr.Code` and start a new session.
+
 ## Idempotent requests
 
 `Register`, `BatchRegister` and `BatchRegisterAsync` accept
@@ -187,6 +229,11 @@ first:
   and for calls with an idempotency key, never for other POSTs such as
   `Identify` or `Verify`.
 - Other 4xx responses are never retried.
+- `CompleteLivenessSession` is retried only on 429, which the server sends
+  before it touches the session. It is not retried on a network error or any
+  5xx, including 503 `SERVICE_BUSY`: the server uses the session up before the
+  engine can answer busy, so a retry would only fail with
+  `LIVENESS_SESSION_INVALID` and hide the cause. On a 503, create a new session.
 - The enrolment methods send the same idempotency key on every attempt, and
   generate one when you pass none.
 

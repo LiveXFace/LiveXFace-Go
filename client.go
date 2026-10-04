@@ -23,7 +23,7 @@ const defaultBaseURL = "https://api.livexface.com/api/v1"
 // ContractVersion is the API contract version (info.version of /openapi.json)
 // this SDK release is validated against. The contract is pinned in
 // contract/openapi-<version>.json and checked by the test suite.
-const ContractVersion = "1.0.0"
+const ContractVersion = "2.0.0"
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
@@ -96,6 +96,8 @@ func WithHTTPClient(hc *http.Client) Option {
 //   - network errors and other 5xx responses are retried only for GET, PATCH
 //     and DELETE requests and for requests that carry an idempotency key;
 //   - other 4xx responses are never retried;
+//   - CompleteLivenessSession is retried only on 429: the server uses the
+//     session up before it can answer 503;
 //   - Register, BatchRegister and BatchRegisterAsync send one idempotency key
 //     on every attempt of a call, generating one when the caller gave none.
 //
@@ -195,6 +197,13 @@ type apiEnvelope struct {
 // response it returns a *APIError. body is sent whole on every attempt; a
 // non-empty idempotencyKey is sent as the Idempotency-Key header.
 func (c *Client) do(ctx context.Context, method, path string, body []byte, contentType, idempotencyKey string) (json.RawMessage, error) {
+	return c.doRetry(ctx, method, path, body, contentType, idempotencyKey, true)
+}
+
+// doRetry is do with a choice about 503: retryBusy false leaves a 503 to the
+// rules for other 5xx, for a request the server may have acted on before
+// answering 503 (completing a liveness session uses the session up first).
+func (c *Client) doRetry(ctx context.Context, method, path string, body []byte, contentType, idempotencyKey string, retryBusy bool) (json.RawMessage, error) {
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 		if err != nil {
@@ -214,7 +223,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, conte
 		}
 		safe := idempotencyKey != "" || method == http.MethodGet ||
 			method == http.MethodPatch || method == http.MethodDelete
-		delay, ok := c.retryDelay(err, attempt, safe)
+		delay, ok := c.retryDelay(err, attempt, safe, retryBusy)
 		if !ok {
 			return nil, err
 		}
@@ -288,11 +297,12 @@ func (c *Client) send(req *http.Request) (json.RawMessage, error) {
 // retryDelay reports whether a failed attempt may be retried and how long to
 // wait first. safe means repeating the request is harmless: a read, a
 // metadata update, a deletion or a request with an idempotency key.
-func (c *Client) retryDelay(err error, attempt int, safe bool) (time.Duration, bool) {
+// retryBusy false treats 503 like any other 5xx.
+func (c *Client) retryDelay(err error, attempt int, safe, retryBusy bool) (time.Duration, bool) {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		switch s := apiErr.StatusCode; {
-		case s == http.StatusTooManyRequests || s == http.StatusServiceUnavailable:
+		case s == http.StatusTooManyRequests || (s == http.StatusServiceUnavailable && retryBusy):
 			if ra := apiErr.RetryAfter; ra != nil {
 				if float64(*ra) >= c.maxRetryDelay.Seconds() {
 					return c.maxRetryDelay, true
@@ -570,21 +580,27 @@ func (r *FacesResource) Liveness(ctx context.Context, collectionID string, image
 	return &result, nil
 }
 
-// ActiveLiveness runs an active liveness check (blink, head turn and passive
-// anti-spoofing) over a sequence of 5 to 50 frames. When the check passes, the
-// result carries a single-use LivenessToken (valid for 5 minutes, bound to the
-// organization and collection) that can be passed to Register or BatchItem to
-// enrol into a collection that requires liveness.
-func (r *FacesResource) ActiveLiveness(ctx context.Context, collectionID string, frames []LivenessFrame) (*ActiveLivenessResult, error) {
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
+// writeFrames adds frames as the parts frame_0, frame_1, ….
+func writeFrames(mw *multipart.Writer, frames []LivenessFrame) error {
 	for i, frame := range frames {
 		field := fmt.Sprintf("frame_%d", i)
 		fname := imageFilename(frame.Filename, field+".jpg")
 		if err := writeImagePart(mw, field, fname, frame.Image); err != nil {
-			return nil, fmt.Errorf("livexface: write %s: %w", field, err)
+			return fmt.Errorf("livexface: write %s: %w", field, err)
 		}
+	}
+	return nil
+}
+
+// ActiveLiveness runs a stateless active liveness check (blink, head turn and
+// passive anti-spoofing) over a sequence of 5 to 50 frames. It returns a
+// verdict only and issues no liveness token; to enrol into a collection that
+// requires liveness, use CreateLivenessSession and CompleteLivenessSession.
+func (r *FacesResource) ActiveLiveness(ctx context.Context, collectionID string, frames []LivenessFrame) (*ActiveLivenessResult, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := writeFrames(mw, frames); err != nil {
+		return nil, err
 	}
 	mw.Close()
 
@@ -597,6 +613,60 @@ func (r *FacesResource) ActiveLiveness(ctx context.Context, collectionID string,
 	var result ActiveLivenessResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("livexface: decode active liveness result: %w", err)
+	}
+	return &result, nil
+}
+
+// CreateLivenessSession starts a liveness session bound to the collection.
+// The server picks the steps (one blink and one or two head turns, in random
+// order); show them to the person in order, capture frames while they perform
+// them, and pass the frames to CompleteLivenessSession before ExpiresAt
+// (60 seconds by default).
+func (r *FacesResource) CreateLivenessSession(ctx context.Context, collectionID string) (*LivenessSession, error) {
+	data, err := r.c.do(ctx, http.MethodPost,
+		"/collections/"+collectionID+"/liveness-sessions", nil, "", "")
+	if err != nil {
+		return nil, err
+	}
+	var session LivenessSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, fmt.Errorf("livexface: decode liveness session: %w", err)
+	}
+	return &session, nil
+}
+
+// CompleteLivenessSession submits 5 to 50 frames for a liveness session. Set
+// mirrored when the frames are horizontally mirrored, as a selfie preview is.
+// The session passes only when every step appears in the frames in order; a
+// pass carries a single-use LivenessToken (valid for 5 minutes, bound to the
+// collection) for Register or BatchItem.
+//
+// A session is judged at most once: any submission other than one with fewer
+// than 5 frames (IMAGE_REQUIRED) uses it up. A reused, expired or unknown
+// session fails with LIVENESS_SESSION_INVALID (422). The call is therefore
+// never retried automatically except on 429, which the server answers before
+// touching the session; after a network error or a 5xx such as SERVICE_BUSY,
+// create a new session.
+func (r *FacesResource) CompleteLivenessSession(ctx context.Context, collectionID, sessionID string, frames []LivenessFrame, mirrored bool) (*LivenessSessionResult, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := writeFrames(mw, frames); err != nil {
+		return nil, err
+	}
+	if err := mw.WriteField("mirrored", strconv.FormatBool(mirrored)); err != nil {
+		return nil, err
+	}
+	mw.Close()
+
+	data, err := r.c.doRetry(ctx, http.MethodPost,
+		"/collections/"+collectionID+"/liveness-sessions/"+sessionID,
+		buf.Bytes(), mw.FormDataContentType(), "", false)
+	if err != nil {
+		return nil, err
+	}
+	var result LivenessSessionResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("livexface: decode liveness session result: %w", err)
 	}
 	return &result, nil
 }

@@ -1,37 +1,6 @@
 {
     "components": {
         "schemas": {
-            "github_com_livexface_backend_internal_domain_entity.ActiveLivenessResult": {
-                "properties": {
-                    "challenges": {
-                        "additionalProperties": {
-                            "additionalProperties": true,
-                            "type": "object"
-                        },
-                        "type": "object"
-                    },
-                    "framesAnalyzed": {
-                        "type": "integer"
-                    },
-                    "framesWithFace": {
-                        "type": "integer"
-                    },
-                    "isLive": {
-                        "type": "boolean"
-                    },
-                    "livenessToken": {
-                        "description": "Set only when the check passed and the token could be stored.",
-                        "type": "string"
-                    },
-                    "livenessTokenExpiresAt": {
-                        "type": "string"
-                    },
-                    "overallScore": {
-                        "type": "number"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_livexface_backend_internal_domain_entity.BatchJobResult": {
                 "properties": {
                     "error": {
@@ -84,6 +53,17 @@
                     },
                     "width": {
                         "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_livexface_backend_internal_domain_entity.LivenessStep": {
+                "properties": {
+                    "passed": {
+                        "type": "boolean"
+                    },
+                    "type": {
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -330,6 +310,30 @@
                     "license": {
                         "description": "signed license JWT",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_delivery_http_handler.activeLivenessResponse": {
+                "properties": {
+                    "challenges": {
+                        "additionalProperties": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        },
+                        "type": "object"
+                    },
+                    "framesAnalyzed": {
+                        "type": "integer"
+                    },
+                    "framesWithFace": {
+                        "type": "integer"
+                    },
+                    "isLive": {
+                        "type": "boolean"
+                    },
+                    "overallScore": {
+                        "type": "number"
                     }
                 },
                 "type": "object"
@@ -1291,6 +1295,15 @@
                 ],
                 "type": "object"
             },
+            "internal_delivery_http_handler.livenessChallengeDTO": {
+                "properties": {
+                    "type": {
+                        "example": "turn_left",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "internal_delivery_http_handler.livenessResponse": {
                 "properties": {
                     "faceCount": {
@@ -1304,6 +1317,60 @@
                     },
                     "livenessScore": {
                         "type": "number"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_delivery_http_handler.livenessSessionResponse": {
+                "properties": {
+                    "challenges": {
+                        "items": {
+                            "$ref": "#/components/schemas/internal_delivery_http_handler.livenessChallengeDTO"
+                        },
+                        "type": "array"
+                    },
+                    "expiresAt": {
+                        "type": "string"
+                    },
+                    "sessionId": {
+                        "example": "lvs_3q2-…",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "internal_delivery_http_handler.livenessSessionResultResponse": {
+                "properties": {
+                    "challenges": {
+                        "additionalProperties": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        },
+                        "type": "object"
+                    },
+                    "framesAnalyzed": {
+                        "type": "integer"
+                    },
+                    "framesWithFace": {
+                        "type": "integer"
+                    },
+                    "isLive": {
+                        "type": "boolean"
+                    },
+                    "livenessToken": {
+                        "type": "string"
+                    },
+                    "livenessTokenExpiresAt": {
+                        "type": "string"
+                    },
+                    "overallScore": {
+                        "type": "number"
+                    },
+                    "steps": {
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_livexface_backend_internal_domain_entity.LivenessStep"
+                        },
+                        "type": "array"
                     }
                 },
                 "type": "object"
@@ -1964,13 +2031,13 @@
         },
         "termsOfService": "http://swagger.io/terms/",
         "title": "LiveXFace — Face Recognition API as a Service",
-        "version": "1.0.0"
+        "version": "2.0.0"
     },
     "openapi": "3.0.3",
     "paths": {
         "/collections/{collection_id}/active-liveness": {
             "post": {
-                "description": "Judge a sequence of frames (blink, head turn and the passive model). Send the frames in order as frame_0, frame_1, … up to frame_49; at least 5 are required. A passed check returns a single-use livenessToken, valid for 5 minutes and bound to this collection, for enrolling into a collection that requires liveness.",
+                "description": "Judge a sequence of frames (blink, head turn and the passive model). Send the frames in order as frame_0, frame_1, … up to frame_49; at least 5 are required. This stateless check returns a verdict only and issues no liveness token; to enrol into a collection that requires liveness, complete a liveness session instead.",
                 "parameters": [
                     {
                         "description": "Collection ID (UUID)",
@@ -2014,7 +2081,7 @@
                                         {
                                             "properties": {
                                                 "data": {
-                                                    "$ref": "#/components/schemas/github_com_livexface_backend_internal_domain_entity.ActiveLivenessResult"
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.activeLivenessResponse"
                                                 }
                                             },
                                             "type": "object"
@@ -2163,7 +2230,7 @@
                         "APIKeyAuth": []
                     }
                 ],
-                "summary": "Active liveness check",
+                "summary": "Active liveness check (verdict only)",
                 "tags": [
                     "Face Recognition"
                 ]
@@ -4655,6 +4722,381 @@
                     }
                 ],
                 "summary": "Liveness detection",
+                "tags": [
+                    "Face Recognition"
+                ]
+            }
+        },
+        "/collections/{collection_id}/liveness-sessions": {
+            "post": {
+                "description": "Start a liveness session: the server picks the steps the person must perform, in order (one blink and one or two head turns, turn_left and turn_right meaning the person's own left and right). Show them to the person, capture frames while they perform them, and submit the frames to the session before expiresAt (60 seconds by default). The session is bound to this collection.",
+                "parameters": [
+                    {
+                        "description": "Collection ID (UUID)",
+                        "in": "path",
+                        "name": "collection_id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "data": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.livenessSessionResponse"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "Created"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "INVALID_API_KEY"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "INSUFFICIENT_SCOPE, API_KEY_INACTIVE, API_KEY_EXPIRED, IP_NOT_ALLOWED or COLLECTION_NOT_ALLOWED"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "COLLECTION_NOT_FOUND"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "RATE_LIMIT_EXCEEDED or QUOTA_EXCEEDED"
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyAuth": []
+                    }
+                ],
+                "summary": "Create a liveness session",
+                "tags": [
+                    "Face Recognition"
+                ]
+            }
+        },
+        "/collections/{collection_id}/liveness-sessions/{session_id}": {
+            "post": {
+                "description": "Submit the frames for a liveness session, once, before it expires. Every step must appear in the frames in the order given, and the blink and passive rules of the active check must hold. A pass returns a single-use livenessToken, valid for 5 minutes and bound to this collection, for enrolling with liveness_token. The session is used up by any submission except one with fewer than 5 frames.",
+                "parameters": [
+                    {
+                        "description": "Collection ID (UUID)",
+                        "in": "path",
+                        "name": "collection_id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Session ID from creating the session",
+                        "in": "path",
+                        "name": "session_id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "properties": {
+                                    "frame_0": {
+                                        "description": "First frame; continue with frame_1 … frame_49 (at least 5 frames)",
+                                        "format": "binary",
+                                        "type": "string",
+                                        "x-formData-name": "frame_0"
+                                    },
+                                    "mirrored": {
+                                        "default": false,
+                                        "description": "true when the frames are horizontally mirrored, as a selfie preview is",
+                                        "type": "boolean",
+                                        "x-formData-name": "mirrored"
+                                    }
+                                },
+                                "required": [
+                                    "frame_0"
+                                ],
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "data": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.livenessSessionResultResponse"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "IMAGE_REQUIRED: fewer than 5 readable frames (the session is kept); BAD_REQUEST: mirrored is not true or false"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "INVALID_API_KEY"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "INSUFFICIENT_SCOPE, API_KEY_INACTIVE, API_KEY_EXPIRED, IP_NOT_ALLOWED or COLLECTION_NOT_ALLOWED"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "COLLECTION_NOT_FOUND"
+                    },
+                    "422": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "LIVENESS_SESSION_INVALID: unknown, expired, already submitted, or bound to another organization or collection"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "RATE_LIMIT_EXCEEDED or QUOTA_EXCEEDED"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "allOf": [
+                                        {
+                                            "$ref": "#/components/schemas/internal_delivery_http_handler.APIResponse"
+                                        },
+                                        {
+                                            "properties": {
+                                                "error": {
+                                                    "$ref": "#/components/schemas/internal_delivery_http_handler.APIError"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "description": "SERVICE_BUSY: the recognition engine is saturated; create a new session and retry"
+                    }
+                },
+                "security": [
+                    {
+                        "APIKeyAuth": []
+                    }
+                ],
+                "summary": "Complete a liveness session",
                 "tags": [
                     "Face Recognition"
                 ]
