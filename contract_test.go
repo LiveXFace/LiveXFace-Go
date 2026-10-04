@@ -122,6 +122,14 @@ var contractCalls = map[string]func(context.Context, *Client) error{
 		_, err := c.Faces.ActiveLiveness(ctx, "col_1", frames(5))
 		return err
 	},
+	"FacesResource.CreateLivenessSession": func(ctx context.Context, c *Client) error {
+		_, err := c.Faces.CreateLivenessSession(ctx, "col_1")
+		return err
+	},
+	"FacesResource.CompleteLivenessSession": func(ctx context.Context, c *Client) error {
+		_, err := c.Faces.CompleteLivenessSession(ctx, "col_1", "lvs_1", frames(5), true)
+		return err
+	},
 	"FacesResource.Compare": func(ctx context.Context, c *Client) error {
 		_, err := c.Faces.Compare(ctx, CompareInput{Image1: []byte{0xff, 0xd8}, Image2: []byte{0xff, 0xd8}, Threshold: 0.5})
 		return err

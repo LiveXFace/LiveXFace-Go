@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,7 +29,7 @@ func newTestServer(t *testing.T, data string) (*Client, *capturedRequest) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.Method = r.Method
 		got.Path = r.URL.Path
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
+		if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 			t.Errorf("parse multipart: %v", err)
 		}
 		got.Files = map[string]int{}
@@ -62,9 +64,7 @@ func TestActiveLivenessPassed(t *testing.T) {
 			"blink": {"passed": true, "available": true, "blinkCount": 2},
 			"headTurn": {"passed": null, "available": false},
 			"passiveAntispoof": {"passed": true, "available": true, "score": 0.97}
-		},
-		"livenessToken": "lvt_abc",
-		"livenessTokenExpiresAt": "2026-09-28T10:05:00Z"
+		}
 	}`)
 
 	res, err := c.Faces.ActiveLiveness(context.Background(), "col_1", frames(6))
@@ -82,12 +82,8 @@ func TestActiveLivenessPassed(t *testing.T) {
 	if len(got.Files) != 6 {
 		t.Errorf("got %d file parts, want 6", len(got.Files))
 	}
-	if !res.IsLive || res.LivenessToken != "lvt_abc" || res.FramesWithFace != 6 {
+	if !res.IsLive || res.FramesWithFace != 6 {
 		t.Errorf("unexpected result: %+v", res)
-	}
-	want := time.Date(2026, 9, 28, 10, 5, 0, 0, time.UTC)
-	if res.LivenessTokenExpiresAt == nil || !res.LivenessTokenExpiresAt.Equal(want) {
-		t.Errorf("expiresAt = %v, want %v", res.LivenessTokenExpiresAt, want)
 	}
 	if b := res.Challenges.Blink; b.Passed == nil || !*b.Passed || !b.Available || b.Metrics["blinkCount"] != float64(2) {
 		t.Errorf("blink = %+v", b)
@@ -97,7 +93,7 @@ func TestActiveLivenessPassed(t *testing.T) {
 	}
 }
 
-func TestActiveLivenessFailedHasNoToken(t *testing.T) {
+func TestActiveLivenessFailed(t *testing.T) {
 	c, _ := newTestServer(t, `{
 		"isLive": false, "overallScore": 0.21, "framesAnalyzed": 5, "framesWithFace": 5,
 		"challenges": {
@@ -111,12 +107,184 @@ func TestActiveLivenessFailedHasNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.IsLive || res.LivenessToken != "" || res.LivenessTokenExpiresAt != nil {
+	if res.IsLive {
 		t.Errorf("unexpected result: %+v", res)
 	}
 	if p := res.Challenges.Blink.Passed; p == nil || *p {
 		t.Errorf("blink.passed = %v, want false", p)
 	}
+}
+
+// The stateless check issues no token since contract 2.0.0; only a completed
+// liveness session does.
+func TestActiveLivenessResultHasNoToken(t *testing.T) {
+	typ := reflect.TypeOf(ActiveLivenessResult{})
+	for i := 0; i < typ.NumField(); i++ {
+		if f := typ.Field(i); strings.Contains(f.Name, "Token") || strings.Contains(f.Tag.Get("json"), "Token") {
+			t.Errorf("ActiveLivenessResult has token field %s", f.Name)
+		}
+	}
+}
+
+// ─── Liveness sessions ────────────────────────────────────────────────────────
+
+func TestCreateLivenessSession(t *testing.T) {
+	c, got := newTestServer(t, `{
+		"sessionId": "lvs_abc",
+		"challenges": [{"type": "turn_left"}, {"type": "blink"}, {"type": "turn_right"}],
+		"expiresAt": "2026-10-03T10:01:00Z"
+	}`)
+
+	s, err := c.Faces.CreateLivenessSession(context.Background(), "col_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != http.MethodPost || got.Path != "/api/v1/collections/col_1/liveness-sessions" {
+		t.Errorf("request = %s %s", got.Method, got.Path)
+	}
+	if len(got.Files)+len(got.Fields) != 0 {
+		t.Errorf("sent a body: files %v, fields %v", got.Files, got.Fields)
+	}
+	want := []LivenessStepType{LivenessStepTurnLeft, LivenessStepBlink, LivenessStepTurnRight}
+	if s.SessionID != "lvs_abc" || len(s.Challenges) != len(want) {
+		t.Fatalf("session = %+v", s)
+	}
+	for i, ch := range s.Challenges {
+		if ch.Type != want[i] {
+			t.Errorf("challenge %d = %q, want %q", i, ch.Type, want[i])
+		}
+	}
+	if !s.ExpiresAt.Equal(time.Date(2026, 10, 3, 10, 1, 0, 0, time.UTC)) {
+		t.Errorf("expiresAt = %v", s.ExpiresAt)
+	}
+}
+
+func TestCompleteLivenessSessionPassed(t *testing.T) {
+	c, got := newTestServer(t, `{
+		"isLive": true, "overallScore": 0.91, "framesAnalyzed": 25, "framesWithFace": 25,
+		"challenges": {
+			"blink": {"passed": true, "available": true},
+			"headTurn": {"passed": true, "available": true},
+			"passiveAntispoof": {"passed": true, "available": true, "score": 0.95}
+		},
+		"steps": [{"type": "turn_left", "passed": true}, {"type": "blink", "passed": true}],
+		"livenessToken": "lvt_abc",
+		"livenessTokenExpiresAt": "2026-10-03T10:06:00Z"
+	}`)
+
+	res, err := c.Faces.CompleteLivenessSession(context.Background(), "col_1", "lvs_abc", frames(25), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != http.MethodPost || got.Path != "/api/v1/collections/col_1/liveness-sessions/lvs_abc" {
+		t.Errorf("request = %s %s", got.Method, got.Path)
+	}
+	for i := 0; i < 25; i++ {
+		if got.Files[fmt.Sprintf("frame_%d", i)] != 1 {
+			t.Errorf("missing part frame_%d (files: %v)", i, got.Files)
+		}
+	}
+	if len(got.Files) != 25 || got.Fields["mirrored"] != "true" {
+		t.Errorf("files %d, mirrored %q; want 25 and true", len(got.Files), got.Fields["mirrored"])
+	}
+	if !res.IsLive || res.FramesAnalyzed != 25 || res.LivenessToken != "lvt_abc" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if want := time.Date(2026, 10, 3, 10, 6, 0, 0, time.UTC); res.LivenessTokenExpiresAt == nil || !res.LivenessTokenExpiresAt.Equal(want) {
+		t.Errorf("token expiresAt = %v, want %v", res.LivenessTokenExpiresAt, want)
+	}
+	wantSteps := []LivenessStep{{LivenessStepTurnLeft, true}, {LivenessStepBlink, true}}
+	if !reflect.DeepEqual(res.Steps, wantSteps) {
+		t.Errorf("steps = %+v, want %+v", res.Steps, wantSteps)
+	}
+	if p := res.Challenges.HeadTurn.Passed; p == nil || !*p {
+		t.Errorf("headTurn.passed = %v, want true", p)
+	}
+}
+
+func TestCompleteLivenessSessionFailedHasNoToken(t *testing.T) {
+	c, got := newTestServer(t, `{
+		"isLive": false, "overallScore": 0.4, "framesAnalyzed": 20, "framesWithFace": 20,
+		"challenges": {
+			"blink": {"passed": true, "available": true},
+			"headTurn": {"passed": true, "available": true},
+			"passiveAntispoof": {"passed": true, "available": true}
+		},
+		"steps": [{"type": "blink", "passed": true}, {"type": "turn_right", "passed": false}]
+	}`)
+
+	res, err := c.Faces.CompleteLivenessSession(context.Background(), "col_1", "lvs_abc", frames(20), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fields["mirrored"] != "false" {
+		t.Errorf("mirrored = %q, want false", got.Fields["mirrored"])
+	}
+	if res.IsLive || res.LivenessToken != "" || res.LivenessTokenExpiresAt != nil {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if len(res.Steps) != 2 || res.Steps[1] != (LivenessStep{LivenessStepTurnRight, false}) {
+		t.Errorf("steps = %+v", res.Steps)
+	}
+}
+
+func TestCompleteLivenessSessionInvalid(t *testing.T) {
+	c, s := scripted(t, []Option{WithRetries(2)},
+		reply(http.StatusUnprocessableEntity, apiError(422, "LIVENESS_SESSION_INVALID")))
+
+	_, err := c.Faces.CompleteLivenessSession(context.Background(), "col_1", "lvs_used", frames(5), false)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *APIError, got %v", err)
+	}
+	if apiErr.Code != "LIVENESS_SESSION_INVALID" || apiErr.StatusCode != 422 || apiErr.RequestID != "req_422" {
+		t.Errorf("error = %+v", apiErr)
+	}
+	if n := len(s.requests()); n != 1 {
+		t.Errorf("%d requests, want 1", n)
+	}
+}
+
+// A retry would find the session used up, so completion is not repeated after
+// a dropped connection or a 503 (the server consumes the session first), but
+// is after a 429, which the server sends before touching the session.
+func TestCompleteLivenessSessionRetries(t *testing.T) {
+	complete := func(c *Client) error {
+		_, err := c.Faces.CompleteLivenessSession(context.Background(), "col_1", "lvs_abc", frames(5), false)
+		return err
+	}
+	t.Run("not retried on a dropped connection", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(3)}, drop)
+		var apiErr *APIError
+		if err := complete(c); err == nil || errors.As(err, &apiErr) {
+			t.Fatalf("want a network error, got %v", err)
+		}
+		if keys := s.requests(); len(keys) != 1 || keys[0] != "" {
+			t.Errorf("requests = %q, want one without a key", keys)
+		}
+	})
+	t.Run("not retried on 503", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(3)},
+			reply(http.StatusServiceUnavailable, apiError(503, "SERVICE_BUSY"), "Retry-After", "1"))
+		var apiErr *APIError
+		if err := complete(c); !errors.As(err, &apiErr) || apiErr.Code != "SERVICE_BUSY" {
+			t.Fatalf("want SERVICE_BUSY, got %v", err)
+		}
+		if n := len(s.requests()); n != 1 {
+			t.Errorf("%d requests, want 1", n)
+		}
+	})
+	t.Run("retried on 429", func(t *testing.T) {
+		c, s := scripted(t, []Option{WithRetries(3)},
+			reply(http.StatusTooManyRequests, apiError(429, "RATE_LIMIT_EXCEEDED"), "Retry-After", "1"),
+			reply(http.StatusOK, `{"success":true,"data":{"isLive":false,"steps":[]}}`))
+		if err := complete(c); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(s.requests()); n != 2 {
+			t.Errorf("%d requests, want 2", n)
+		}
+	})
 }
 
 func TestRegisterLivenessToken(t *testing.T) {

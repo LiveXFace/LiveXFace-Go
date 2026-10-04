@@ -45,7 +45,8 @@ type LivenessResult struct {
 	FaceCount     int     `json:"faceCount"`
 }
 
-// LivenessFrame is a single frame (JPEG or PNG) submitted to ActiveLiveness.
+// LivenessFrame is a single frame (JPEG or PNG) submitted to ActiveLiveness
+// or CompleteLivenessSession.
 type LivenessFrame struct {
 	Image []byte
 	// Filename is optional; defaults to "frame_<n>.jpg".
@@ -101,15 +102,55 @@ type LivenessChallenges struct {
 }
 
 // ActiveLivenessResult is returned by an active (multi-frame) liveness check.
-// LivenessToken and LivenessTokenExpiresAt are set only when IsLive is true.
+// It is a verdict only: liveness tokens come from CompleteLivenessSession.
 type ActiveLivenessResult struct {
-	IsLive                 bool               `json:"isLive"`
-	OverallScore           float64            `json:"overallScore"`
-	FramesAnalyzed         int                `json:"framesAnalyzed"`
-	FramesWithFace         int                `json:"framesWithFace"`
-	Challenges             LivenessChallenges `json:"challenges"`
-	LivenessToken          string             `json:"livenessToken,omitempty"`
-	LivenessTokenExpiresAt *time.Time         `json:"livenessTokenExpiresAt,omitempty"`
+	IsLive         bool               `json:"isLive"`
+	OverallScore   float64            `json:"overallScore"`
+	FramesAnalyzed int                `json:"framesAnalyzed"`
+	FramesWithFace int                `json:"framesWithFace"`
+	Challenges     LivenessChallenges `json:"challenges"`
+}
+
+// LivenessStepType is one step a liveness session asks the person to perform.
+// Turns are in the person's own left and right.
+type LivenessStepType string
+
+// The step types a liveness session can ask for.
+const (
+	LivenessStepBlink     LivenessStepType = "blink"
+	LivenessStepTurnLeft  LivenessStepType = "turn_left"
+	LivenessStepTurnRight LivenessStepType = "turn_right"
+)
+
+// LivenessSessionChallenge is one step of a liveness session.
+type LivenessSessionChallenge struct {
+	Type LivenessStepType `json:"type"`
+}
+
+// LivenessSession is returned by CreateLivenessSession. Show its Challenges
+// to the person in order, capture frames while they perform them and submit
+// the frames with CompleteLivenessSession before ExpiresAt.
+type LivenessSession struct {
+	SessionID  string                     `json:"sessionId"`
+	Challenges []LivenessSessionChallenge `json:"challenges"`
+	ExpiresAt  time.Time                  `json:"expiresAt"`
+}
+
+// LivenessStep reports whether one session step was performed, in its turn.
+type LivenessStep struct {
+	Type   LivenessStepType `json:"type"`
+	Passed bool             `json:"passed"`
+}
+
+// LivenessSessionResult is returned by CompleteLivenessSession: the active
+// liveness verdict plus the session's steps in order. LivenessToken and
+// LivenessTokenExpiresAt are set only when the session passed (and the server
+// could store the token).
+type LivenessSessionResult struct {
+	ActiveLivenessResult
+	Steps                  []LivenessStep `json:"steps"`
+	LivenessToken          string         `json:"livenessToken,omitempty"`
+	LivenessTokenExpiresAt *time.Time     `json:"livenessTokenExpiresAt,omitempty"`
 }
 
 // BatchFaceResult holds the outcome of a single face in a batch register request.
@@ -135,8 +176,8 @@ type RegisterInput struct {
 	// Filename is optional; defaults to "image.jpg".
 	Filename string
 	Metadata map[string]interface{}
-	// LivenessToken is optional; a token from a passed ActiveLiveness check.
-	// Required when the collection requires liveness.
+	// LivenessToken is optional; a token from a passed liveness session
+	// (CompleteLivenessSession). Required when the collection requires liveness.
 	LivenessToken string
 }
 
@@ -179,8 +220,8 @@ type BatchItem struct {
 	Image      []byte
 	Filename   string
 	Metadata   map[string]interface{}
-	// LivenessToken is optional; a token from a passed ActiveLiveness check.
-	// Required when the collection requires liveness.
+	// LivenessToken is optional; a token from a passed liveness session
+	// (CompleteLivenessSession). Required when the collection requires liveness.
 	LivenessToken string
 }
 
