@@ -556,6 +556,42 @@ func (r *FacesResource) Identify(ctx context.Context, collectionID string, input
 	return &result, nil
 }
 
+// Search performs a 1:N face search across multiple or all collections.
+func (r *FacesResource) Search(ctx context.Context, input CrossCollectionSearchInput) (*CrossCollectionSearchResult, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := writeImagePart(mw, "image", imageFilename(input.Filename, "image.jpg"), input.Image); err != nil {
+		return nil, fmt.Errorf("livexface: write image: %w", err)
+	}
+	if len(input.CollectionIDs) > 0 {
+		if err := mw.WriteField("collection_ids", strings.Join(input.CollectionIDs, ",")); err != nil {
+			return nil, err
+		}
+	}
+	if input.TopK > 0 {
+		if err := mw.WriteField("top_k", strconv.Itoa(input.TopK)); err != nil {
+			return nil, err
+		}
+	}
+	if input.Threshold > 0 {
+		if err := mw.WriteField("threshold", strconv.FormatFloat(input.Threshold, 'f', -1, 64)); err != nil {
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
+	}
+	data, err := r.c.do(ctx, http.MethodPost, "/search", buf.Bytes(), mw.FormDataContentType(), "")
+	if err != nil {
+		return nil, err
+	}
+	var result CrossCollectionSearchResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("livexface: decode search result: %w", err)
+	}
+	return &result, nil
+}
+
 // Liveness runs a passive liveness detection check on the provided image.
 func (r *FacesResource) Liveness(ctx context.Context, collectionID string, image []byte, filename string) (*LivenessResult, error) {
 	var buf bytes.Buffer

@@ -114,6 +114,10 @@ var contractCalls = map[string]func(context.Context, *Client) error{
 		_, err := c.Faces.Identify(ctx, "col_1", IdentifyInput{Image: []byte{0xff, 0xd8}, TopK: 3, Threshold: 0.5})
 		return err
 	},
+	"FacesResource.Search": func(ctx context.Context, c *Client) error {
+		_, err := c.Faces.Search(ctx, CrossCollectionSearchInput{Image: []byte{0xff, 0xd8}, CollectionIDs: []string{"col_1", "col_2"}, TopK: 3, Threshold: 0.5})
+		return err
+	},
 	"FacesResource.Liveness": func(ctx context.Context, c *Client) error {
 		_, err := c.Faces.Liveness(ctx, "col_1", []byte{0xff, 0xd8}, "")
 		return err
