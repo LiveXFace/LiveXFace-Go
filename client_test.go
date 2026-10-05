@@ -377,6 +377,31 @@ func TestAPIErrorExposesDetails(t *testing.T) {
 	}
 }
 
+func TestSearchParsesSkippedCollections(t *testing.T) {
+	c, got := newTestServer(t, `{"matches":[{"faceId":"f1","externalId":"u1","collectionId":"c1","confidence":0.91}],"queryTimeMs":12,"collectionsSearched":1,"skippedCollections":[{"id":"c2","name":"Legacy","reason":"embedding_profile_mismatch"}]}`)
+	res, err := c.Faces.Search(context.Background(), CrossCollectionSearchInput{Image: []byte("img"), CollectionIDs: []string{"c1", "c2"}, TopK: 3, Threshold: 0.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "/api/v1/search" || got.Fields["collection_ids"] != "c1,c2" {
+		t.Fatalf("request = %+v", got)
+	}
+	if res.CollectionsSearched != 1 || len(res.SkippedCollections) != 1 || res.SkippedCollections[0].Reason != "embedding_profile_mismatch" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestSearchReturnsTypedProfileMismatch(t *testing.T) {
+	srv := httptest.NewServer(reply(http.StatusConflict, `{"success":false,"error":{"code":"EMBEDDING_PROFILE_MISMATCH","message":"no compatible collections"}}`))
+	defer srv.Close()
+	c := New("lxf_test", WithBaseURL(srv.URL))
+	_, err := c.Faces.Search(context.Background(), CrossCollectionSearchInput{Image: []byte("img")})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "EMBEDDING_PROFILE_MISMATCH" || apiErr.StatusCode != http.StatusConflict {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
 // ─── Idempotency keys and retries ─────────────────────────────────────────────
 
 const faceJSON = `{"success":true,"data":{"id":"face_1","externalId":"u1"}}`

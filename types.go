@@ -37,6 +37,30 @@ type IdentifyResult struct {
 	QueryTimeMs int             `json:"queryTimeMs"`
 }
 
+// CrossCollectionSearchMatch is a match returned by a cross-collection search.
+type CrossCollectionSearchMatch struct {
+	FaceID       string                 `json:"faceId"`
+	ExternalID   string                 `json:"externalId"`
+	CollectionID string                 `json:"collectionId"`
+	Confidence   float64                `json:"confidence"`
+	Metadata     map[string]interface{} `json:"metadata"`
+}
+
+// SkippedCollection explains why a collection was excluded from a search.
+type SkippedCollection struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// CrossCollectionSearchResult is returned by Search.
+type CrossCollectionSearchResult struct {
+	Matches             []CrossCollectionSearchMatch `json:"matches"`
+	QueryTimeMs         int                          `json:"queryTimeMs"`
+	CollectionsSearched int                          `json:"collectionsSearched"`
+	SkippedCollections  []SkippedCollection          `json:"skippedCollections"`
+}
+
 // LivenessResult is returned by a passive liveness detection request.
 type LivenessResult struct {
 	IsLive        bool    `json:"isLive"`
@@ -197,6 +221,15 @@ type IdentifyInput struct {
 	Filename  string
 	TopK      int
 	Threshold float64
+}
+
+// CrossCollectionSearchInput holds parameters for a search across collections.
+type CrossCollectionSearchInput struct {
+	Image         []byte
+	Filename      string
+	CollectionIDs []string
+	TopK          int
+	Threshold     float64
 }
 
 // CompareInput holds the parameters for a pairwise image comparison request.
